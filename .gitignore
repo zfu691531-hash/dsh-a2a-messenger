@@ -1,0 +1,15 @@
+node_modules/
+coverage/
+.DS_Store
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pem
+*.key
+*.enc
+.env
+.a2a/
+.codex/
+dist/
+work/

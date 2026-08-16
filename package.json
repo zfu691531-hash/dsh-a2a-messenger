@@ -1,0 +1,50 @@
+{
+  "name": "dsh-a2a-messenger",
+  "version": "0.1.0",
+  "description": "Local-first encrypted multi-agent messaging and task collaboration MVP",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "bin": {
+    "dsh-a2a": "src/cli.mjs"
+  },
+  "files": [
+    "src",
+    "schemas",
+    "examples",
+    "docs",
+    "scripts",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "SECURITY.md",
+    "ARCHITECTURE.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "doctor": "node src/cli.mjs doctor",
+    "demo": "node src/cli.mjs demo",
+    "install:local": "sh scripts/install.sh",
+    "uninstall:local": "sh scripts/uninstall.sh",
+    "release:check": "node scripts/release-check.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zfu691531-hash/dsh-a2a-messenger.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zfu691531-hash/dsh-a2a-messenger/issues"
+  },
+  "homepage": "https://github.com/zfu691531-hash/dsh-a2a-messenger#readme",
+  "keywords": [
+    "agent",
+    "a2a",
+    "e2ee",
+    "messaging",
+    "multi-agent"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "dataDir": "./.a2a",
+  "relay": {
+    "kind": "loopback",
+    "database": "./.a2a/relay.db",
+    "listen": "127.0.0.1"
+  },
+  "policy": {
+    "default": "deny",
+    "allowCapabilities": ["demo.echo"],
+    "requireHumanApproval": true
+  },
+  "contextCapsule": {
+    "maxBytes": 16384,
+    "maxTokens": 2048,
+    "defaultTtlSeconds": 3600,
+    "receivedState": "quarantined"
+  },
+  "audit": {
+    "includeContent": false
+  },
+  "a2a": {
+    "protocolVersion": "1.0",
+    "specPatchReviewed": "1.0.1"
+  }
+}
