@@ -3,13 +3,13 @@
 ## Supported versions
 
 DSH A2A Messenger is pre-production software. Security fixes are provided only
-for the latest `0.1.x` release line on a best-effort basis. No release currently
+for the latest `0.2.x` release line on a best-effort basis. No release currently
 has a production-support commitment.
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Best effort |
-| < 0.1 | No |
+| 0.2.x | Best effort |
+| <= 0.1.x | No |
 
 ## Reporting a vulnerability
 
@@ -45,14 +45,22 @@ The release gate treats the following as blockers:
   tool arguments;
 - attachment content is consumed before its declared length and digest pass
   verification.
+- a Work Package chunk is accepted from a sibling device, survives outside
+  lifecycle accounting, or materializes after its exact origin device is
+  revoked or rotated;
+- interrupted materialization silently replays filesystem writes or has no
+  verified recovery/explicit retry path;
+- an unregistered relay recipient, unbounded HTTP pull, known example bearer,
+  or live `relay-credentials.json` bypasses the release/resource gates.
 
 See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for assets, trust zones,
 controls, and residual risks.
 
 ## Known limitations
 
-Version `0.1.0` is verified only on a local loopback transport. Public-internet
-and real cross-device deployments remain unverified. The project does not yet
+Version `0.2.0` is verified only on single-machine loopback and authenticated
+local HTTP transports. Public-internet and real cross-device deployments remain
+unverified. The project does not yet
 implement MLS, Double Ratchet, forward secrecy, key transparency, hardware
 attestation, or production-grade key custody. E2EE hides message and Capsule
 plaintext from a relay but not sender agent/device IDs, conversation ID, the

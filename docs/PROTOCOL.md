@@ -1,7 +1,9 @@
-# Messenger protocol 0.1
+# Messenger product protocol 0.2
 
 This document defines the product protocol `dsh-a2a-messenger/0.1`, schema
-version `1`. It is an extension layer, not the Linux Foundation A2A standard.
+version `1`, plus the `work-package/v1` inner-message extension. The encrypted
+frame stays wire-compatible with 0.1. This is an extension layer, not the Linux
+Foundation A2A standard.
 
 ## A2A relationship
 
@@ -25,6 +27,7 @@ Product extensions use these URIs; a breaking change creates a new URI:
 - `https://dsh-a2a.dev/extensions/group-membership/v1`
 - `https://dsh-a2a.dev/extensions/context-capsule/v1`
 - `https://dsh-a2a.dev/extensions/capability-task/v1`
+- `https://dsh-a2a.dev/extensions/work-package/v1`
 
 The following are not standard A2A fields: stable agent/device identity,
 contacts, conversations, groups, membership/key epochs, E2EE, delivery cursors,
@@ -131,10 +134,64 @@ schema but do not automatically download, open, render, or execute attachments.
 Any future approved consumer must verify the declared hash and length against
 downloaded bytes before exposing them to a parser, renderer, model, or tool.
 
+## Work Package
+
+A Work Package is the direct collaboration primitive for task instructions,
+source code, documents, media, and returned results. It does not require a Git
+forge or external object store. A `request` manifest is carried by a
+`task.proposal` with capability `work.package`; a `result` manifest is carried
+by `work.package.result` and references the same task ID. File bytes use
+`work.package.chunk` messages. The manifest schema is
+`schemas/work-package.schema.json`.
+
+Files are regular bytes with deterministic relative POSIX paths, length,
+SHA-256, media type, and chunk count. Chunks bind package ID, task ID, file path,
+index/count, byte length, chunk SHA-256, and the manifest origin's exact device
+and key version. The receiver accepts a chunk only after its signed manifest,
+stores it idempotently, and marks a package `ready` only after every declared
+byte and digest is present. The v1 Transport contract therefore requires
+publish order to be preserved for frames from one sender device; a relay that
+reorders a chunk before its manifest can make that package unavailable but
+cannot bypass signatures, digests, policy, or approval.
+
+The receiver must explicitly approve materialization. Materialization creates a
+new isolated directory, verifies the full manifest again, writes regular files
+without executable bits, and never overwrites an existing path. Approval allows
+bytes to be copied out of quarantine; it does not approve prompts, memory
+insertion, parsing, merging, or tool execution.
+
+Before writing, the endpoint durably records the intended final directory. On
+restart, `recoverWorkPackageMaterialization` verifies every final path, length,
+and SHA-256: an exact atomic-rename result is completed without re-writing;
+missing or invalid output is moved to `blocked` and only package-scoped temporary
+directories are removed. `retryWorkPackageMaterialization` is an explicit local
+action that rechecks current policy and the exact origin device/key membership
+before the allowed `blocked -> running` transition. Recovery never silently
+re-executes an unknown filesystem effect.
+
+## HTTP relay transport
+
+The v0.2 relay API is intentionally small:
+
+- `GET /v1/health` returns non-sensitive service status;
+- `POST /v1/frames` publishes one encrypted frame;
+- `GET /v1/mailbox?cursor=N&limit=N` pulls the authenticated device mailbox.
+
+Publish and pull require a per-device bearer credential. The provisioning JSON
+contains the raw bearer and must stay mode `0600`, outside version control, and
+be deleted when no longer needed. The relay database stores only credential
+hashes, derives the pull mailbox from the authenticated device, rejects
+unregistered/revoked recipients, and rejects publish frames whose
+`senderDeviceId` differs from that device. HTTP pulls are capped at 16 frames;
+clients continue through the durable cursor. Per-mailbox, per-sender/mailbox,
+and global row quotas bound durable relay allocation.
+Credentials grant relay access only; agent identity continues to be the
+root/device certificate and signed message envelope.
+
 ## A2A conformance boundary
 
 `src/a2a.mjs` is a mapper for Agent Card, Message, Task state, Artifact, headers,
-and versioned extensions. Version 0.1.0 does not expose an A2A HTTP/JSON-RPC,
+and versioned extensions. Version 0.2.0 does not expose an A2A HTTP/JSON-RPC,
 gRPC, or SSE server and has not run against an official SDK conformance suite.
 Accordingly, it claims field-level reuse/evaluation, not wire-level A2A server
 conformance.

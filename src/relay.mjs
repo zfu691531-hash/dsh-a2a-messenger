@@ -2,6 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { MAX_FRAME_BYTES, MAX_RECIPIENTS, validateFrame } from './protocol.mjs';
 
 const MAX_MAILBOX_MESSAGES = 10_000;
+const MAX_SENDER_MAILBOX_MESSAGES = 2_000;
+const MAX_RELAY_MESSAGES = 100_000;
 
 export class LoopbackRelayTransport {
   constructor(path = ':memory:') {
@@ -14,9 +16,14 @@ export class LoopbackRelayTransport {
         message_id TEXT NOT NULL,
         frame_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        sender_device_id TEXT,
         UNIQUE(mailbox, message_id)
       );
     `);
+    const deliveryColumns = this.db.prepare('PRAGMA table_info(deliveries)').all();
+    if (!deliveryColumns.some((column) => column.name === 'sender_device_id')) {
+      this.db.exec('ALTER TABLE deliveries ADD COLUMN sender_device_id TEXT');
+    }
     this.online = true;
   }
 
@@ -33,10 +40,17 @@ export class LoopbackRelayTransport {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       for (const mailbox of frame.recipientDeviceIds) {
+        const duplicate = this.db.prepare('SELECT 1 FROM deliveries WHERE mailbox=? AND message_id=?').get(mailbox, frame.messageId);
+        if (duplicate) continue;
         const count = this.db.prepare('SELECT COUNT(*) count FROM deliveries WHERE mailbox=?').get(mailbox).count;
         if (count >= MAX_MAILBOX_MESSAGES) throw new Error('relay_mailbox_quota');
-        this.db.prepare('INSERT OR IGNORE INTO deliveries(mailbox,message_id,frame_json,created_at) VALUES(?,?,?,?)')
-          .run(mailbox, frame.messageId, frameJson, new Date().toISOString());
+        const senderCount = this.db.prepare('SELECT COUNT(*) count FROM deliveries WHERE mailbox=? AND sender_device_id=?')
+          .get(mailbox, frame.senderDeviceId).count;
+        if (senderCount >= MAX_SENDER_MAILBOX_MESSAGES) throw new Error('relay_sender_mailbox_quota');
+        const total = this.db.prepare('SELECT COUNT(*) count FROM deliveries').get().count;
+        if (total >= MAX_RELAY_MESSAGES) throw new Error('relay_global_quota');
+        this.db.prepare('INSERT OR IGNORE INTO deliveries(mailbox,message_id,frame_json,created_at,sender_device_id) VALUES(?,?,?,?,?)')
+          .run(mailbox, frame.messageId, frameJson, new Date().toISOString(), frame.senderDeviceId);
       }
       this.db.exec('COMMIT');
       return { accepted: true, messageId: frame.messageId };

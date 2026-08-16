@@ -6,6 +6,7 @@ export const EXTENSIONS = [
   'https://dsh-a2a.dev/extensions/group-membership/v1',
   'https://dsh-a2a.dev/extensions/context-capsule/v1',
   'https://dsh-a2a.dev/extensions/capability-task/v1',
+  'https://dsh-a2a.dev/extensions/work-package/v1',
 ];
 
 export function a2aHeaders(extra = {}) {
@@ -17,7 +18,7 @@ export function a2aHeaders(extra = {}) {
   };
 }
 
-export function createAgentCard({ name, description, url, version = '0.1.0' }) {
+export function createAgentCard({ name, description, url, version = '0.2.0' }) {
   if (!name || !description || !/^https:\/\//.test(url) || !version) throw new Error('invalid_agent_card');
   return {
     name,

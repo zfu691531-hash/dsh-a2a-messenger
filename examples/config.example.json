@@ -7,8 +7,14 @@
   },
   "policy": {
     "default": "deny",
-    "allowCapabilities": ["demo.echo"],
+    "allowCapabilities": ["demo.echo", "work.package"],
     "requireHumanApproval": true
+  },
+  "workPackage": {
+    "maxFiles": 1024,
+    "maxBytes": 67108864,
+    "receivedState": "quarantined",
+    "materializationRequiresApproval": true
   },
   "contextCapsule": {
     "maxBytes": 16384,

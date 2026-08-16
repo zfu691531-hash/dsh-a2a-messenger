@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -125,9 +125,9 @@ test('future-epoch message is retried after membership catches up', async () => 
   const next = controller.changeRole(alice.agentId, bob.agentId, 'admin');
   aliceNode.installConversation(installMembershipCommit(aliceNode.conversations.get(genesis.conversationId), next, alice));
   await aliceNode.send(genesis.conversationId, { type: 'chat.message', payload: { text: 'next epoch' } });
-  assert.equal(bobNode.sync()[0].retryable, true);
+  assert.equal((await bobNode.sync())[0].retryable, true);
   bobNode.installConversation(installMembershipCommit(bobNode.conversations.get(genesis.conversationId), next, bob));
-  assert.equal(bobNode.sync()[0].duplicate, false);
+  assert.equal((await bobNode.sync())[0].duplicate, false);
   aliceNode.close(); bobNode.close(); relay.close(); rmSync(dir, { recursive: true, force: true });
 });
 
@@ -156,6 +156,13 @@ test('Capsule metadata and frame size are strictly validated', () => {
   capsule.contentHash = '0'.repeat(64);
   assert.throws(() => validateContextCapsule(capsule, { recipientAgentId: bob.agentId }), /capsule_hash_mismatch/);
   assert.throws(() => validateFrame({ protocol: 'dsh-a2a-messenger/0.1', schemaVersion: 1, recipientDeviceIds: ['x'], senderSeq: 1, expiresAt: new Date(Date.now() + 1000).toISOString(), ciphertext: 'A'.repeat(2_000_000) }), /frame_too_large|missing_/);
+});
+
+test('release controls exclude live relay credential files', () => {
+  const root = join(import.meta.dirname, '..');
+  assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^relay-credentials\.json$/m);
+  assert.match(readFileSync(join(root, 'scripts', 'release-check.mjs'), 'utf8'), /sensitive-file:relay-credentials\.json/);
+  assert.equal(JSON.parse(readFileSync(join(root, 'examples', 'relay-credentials.example.json'), 'utf8')).devices[0].token, 'REPLACE_ME');
 });
 
 test('audit errors are fixed metadata codes and attachment references are bounded', () => {

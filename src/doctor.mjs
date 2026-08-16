@@ -16,6 +16,10 @@ export function runDoctor({ identityPath } = {}) {
     checks.push({ name: 'envelope-schema', ok: true });
   } catch (error) { checks.push({ name: 'envelope-schema', ok: false, detail: error.message }); }
   try {
+    JSON.parse(readFileSync(join(root, 'schemas/work-package.schema.json'), 'utf8'));
+    checks.push({ name: 'work-package-schema', ok: true });
+  } catch (error) { checks.push({ name: 'work-package-schema', ok: false, detail: error.message }); }
+  try {
     const store = new LocalStore(':memory:'); store.close();
     const relay = new LoopbackRelayTransport(':memory:');
     checks.push({ name: 'sqlite-loopback', ok: relay.health().ok }); relay.close();

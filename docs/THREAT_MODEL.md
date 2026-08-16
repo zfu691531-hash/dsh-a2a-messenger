@@ -30,6 +30,10 @@ device key, and replay must not repeat an effect.
 | Unauthorized tool call | proposal/provenance-bound descriptor, deny-by-default local policy, single-use trusted approval token, execution-time policy recheck, atomic execution claim | compromised approved adapter may misbehave |
 | Prompt injection in capsule | quarantine, budgets, explicit approval, untrusted-data labeling, no automatic prompt/tool insertion | approved text can still influence a model |
 | Malicious attachment | bounded reference schema and no auto-fetch/open; future consumers must verify downloaded hash/length before use | fetching, malware scanning, and preview are out of MVP |
+| Malicious Work Package path/content | reject traversal, absolute/backslash/control paths, symlinks, non-regular files, case-fold collisions and quota excess; stage encrypted chunks locally; explicit approval; fresh no-overwrite directory; full digest verification; never execute | approved files may still contain malware or prompt injection; no malware scanner in MVP |
+| Crash during Work Package materialization | persist intended destination before writing; atomic rename; restart verifies exact paths/lengths/digests and records completed or blocked without re-writing; explicit retry rechecks policy and origin device | local disk corruption or a hostile local administrator remains out of scope |
+| Relay credential theft | random per-device bearer credentials, invalid public placeholder, raw provisioning file mode `0600` and gitignored/release-blocked, hash-only relay database, sender-device binding, mailbox derived from credential, TLS required outside explicit development mode | a stolen credential can read queued ciphertext/metadata or submit frames for its transport identity; provisioning JSON remains a local secret |
+| Relay resource exhaustion | registered active recipients only; bounded request/frame/HTTP-pull sizes; per-mailbox, per-sender/mailbox, and global row quotas; SQLite transactions | single-process relay has no distributed rate limiter or tenant isolation |
 | Secret leakage in logs | metadata-only audit and tests scanning logs | OS/process compromise remains out of scope |
 | Gesture spoof/false positive | sensor event converted to intent, then policy/approval; confidence is not authority | physical sensor quality not verified |
 | Rollback after restart | pinned controller/root plus membership commit and epoch state persist in SQLite; fork/rollback rejected | disk corruption and hostile local admin out of scope |
@@ -58,6 +62,12 @@ tokens, private keys, decrypted epoch keys, or human approval secrets.
 - any execution bypasses policy/required approval;
 - invalid signatures, stale epochs, or broken membership chains are accepted;
 - relay or audit storage contains test plaintext or secret key material;
+- a Work Package escapes quarantine, overwrites a destination, accepts an
+  undeclared/corrupt/wrong-device chunk, retains chunk bytes outside its
+  lifecycle quota, or materializes without local approval or after origin
+  device revocation;
+- HTTP authentication can pull another device mailbox or publish as another
+  sender device;
 - A2A adapter omits `A2A-Version: 1.0`, invents TaskState values, or represents
   product fields as standard fields;
 - required security, restart, and isolation tests fail.

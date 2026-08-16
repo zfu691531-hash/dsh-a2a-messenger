@@ -8,6 +8,9 @@ const transitions = {
   completed: new Set(), failed: new Set(), cancelled: new Set(),
 };
 
+const MAX_ACTIVE_WORK_PACKAGES = 64;
+const MAX_ACTIVE_WORK_BYTES = 256 * 1024 * 1024;
+
 export class LocalStore {
   constructor(path = ':memory:') {
     this.db = new DatabaseSync(path);
@@ -40,6 +43,42 @@ export class LocalStore {
         message_id TEXT NOT NULL,
         status TEXT NOT NULL,
         metadata_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS work_packages (
+        package_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        authorization_task_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        sender_agent_id TEXT NOT NULL,
+        sender_device_id TEXT NOT NULL,
+        sender_key_version INTEGER NOT NULL,
+        conversation_id TEXT NOT NULL,
+        manifest_json TEXT NOT NULL,
+        manifest_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total_bytes INTEGER NOT NULL,
+        total_chunks INTEGER NOT NULL,
+        received_chunks INTEGER NOT NULL DEFAULT 0,
+        expires_at TEXT NOT NULL,
+        approved_at TEXT,
+        materialized_path TEXT
+      );
+      CREATE TABLE IF NOT EXISTS work_package_chunks (
+        package_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        chunk_index INTEGER NOT NULL,
+        chunk_count INTEGER NOT NULL,
+        byte_length INTEGER NOT NULL,
+        digest TEXT NOT NULL,
+        data_blob BLOB NOT NULL,
+        PRIMARY KEY (package_id, file_path, chunk_index),
+        FOREIGN KEY (package_id) REFERENCES work_packages(package_id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS outbound_work_tasks (
+        task_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS tasks (
         task_id TEXT PRIMARY KEY,
@@ -148,6 +187,7 @@ export class LocalStore {
   }
 
   receive(frame, inner, classification = {}) {
+    this.expireWorkPackages();
     const replayKey = `${frame.conversationId}:${frame.senderDeviceId}:${frame.keyEpoch}:${frame.senderSeq}`;
     this.db.exec('BEGIN IMMEDIATE');
     try {
@@ -159,8 +199,11 @@ export class LocalStore {
       }
       const now = new Date().toISOString();
       this.db.prepare('INSERT INTO replay_seen(message_id,replay_key,seen_at) VALUES(?,?,?)').run(frame.messageId, replayKey, now);
+      const persistedInner = classification.workPackageChunk
+        ? { ...inner, payload: { ...inner.payload, data: undefined } }
+        : inner;
       this.db.prepare('INSERT INTO inbox(message_id,inner_json,status,received_at) VALUES(?,?,?,?)')
-        .run(frame.messageId, JSON.stringify(inner), classification.inboxStatus ?? 'received', now);
+        .run(frame.messageId, JSON.stringify(persistedInner), classification.inboxStatus ?? 'received', now);
       if (classification.capsule) {
         const capsuleJson = JSON.stringify(classification.capsule);
         const existingCapsule = this.db.prepare('SELECT metadata_json FROM capsules WHERE capsule_id=?').get(classification.capsule.capsuleId);
@@ -181,6 +224,56 @@ export class LocalStore {
         this.db.prepare('INSERT OR IGNORE INTO task_events(task_id,state_version,state,previous_state,at) VALUES(?,?,?,?,?)')
           .run(task.taskId, 1, task.state, null, now);
       }
+      if (classification.workPackageManifest) {
+        const manifest = classification.workPackageManifest;
+        const existing = this.db.prepare('SELECT manifest_hash FROM work_packages WHERE package_id=?').get(manifest.packageId);
+        if (existing && existing.manifest_hash !== manifest.manifestHash) throw new Error('work_package_id_collision');
+        const totalChunks = manifest.files.reduce((sum, file) => sum + file.chunkCount, 0);
+        if (!existing) {
+          const active = this.db.prepare(`SELECT COUNT(*) count,COALESCE(SUM(total_bytes),0) bytes FROM work_packages
+            WHERE status NOT IN ('materialized','expired')`).get();
+          if (active.count >= MAX_ACTIVE_WORK_PACKAGES || active.bytes + manifest.totalBytes > MAX_ACTIVE_WORK_BYTES) {
+            throw new Error('work_staging_quota');
+          }
+          this.db.prepare(`INSERT INTO work_packages(
+            package_id,task_id,authorization_task_id,kind,sender_agent_id,sender_device_id,sender_key_version,conversation_id,
+            manifest_json,manifest_hash,status,total_bytes,total_chunks,received_chunks,expires_at
+          ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)`)
+            .run(manifest.packageId, manifest.taskId, classification.authorizationTaskId, manifest.kind,
+              frame.senderAgentId, frame.senderDeviceId, frame.senderKeyVersion, frame.conversationId,
+              JSON.stringify(manifest), manifest.manifestHash, totalChunks === 0 ? 'ready' : 'staging',
+              manifest.totalBytes, totalChunks, new Date(frame.expiresAt).toISOString());
+        }
+      }
+      if (classification.workPackageChunk) {
+        const chunk = classification.workPackageChunk;
+        const pkg = this.db.prepare(`SELECT task_id,status,sender_agent_id,sender_device_id,sender_key_version,expires_at
+          FROM work_packages WHERE package_id=?`).get(chunk.packageId);
+        if (!pkg || pkg.task_id !== chunk.taskId) throw new Error('work_package_manifest_required');
+        if (pkg.sender_agent_id !== frame.senderAgentId || pkg.sender_device_id !== frame.senderDeviceId
+          || pkg.sender_key_version !== frame.senderKeyVersion) throw new Error('work_package_sender_mismatch');
+        if (Date.parse(pkg.expires_at) <= Date.now()) throw new Error('work_package_expired');
+        if (!['staging', 'ready'].includes(pkg.status)) throw new Error('work_package_closed');
+        const bytes = Buffer.from(chunk.data, 'base64');
+        const existing = this.db.prepare(`SELECT chunk_count,byte_length,digest,data_blob FROM work_package_chunks
+          WHERE package_id=? AND file_path=? AND chunk_index=?`).get(chunk.packageId, chunk.path, chunk.chunkIndex);
+        if (existing) {
+          if (existing.chunk_count !== chunk.chunkCount || existing.byte_length !== chunk.byteLength
+            || existing.digest !== chunk.sha256 || !Buffer.from(existing.data_blob).equals(bytes)) {
+            throw new Error('work_chunk_collision');
+          }
+        } else {
+          this.db.prepare(`INSERT INTO work_package_chunks(
+            package_id,task_id,file_path,chunk_index,chunk_count,byte_length,digest,data_blob
+          ) VALUES(?,?,?,?,?,?,?,?)`).run(chunk.packageId, chunk.taskId, chunk.path, chunk.chunkIndex,
+            chunk.chunkCount, chunk.byteLength, chunk.sha256, bytes);
+          this.db.prepare('UPDATE work_packages SET received_chunks=received_chunks+1 WHERE package_id=?').run(chunk.packageId);
+        }
+        const progress = this.db.prepare('SELECT received_chunks,total_chunks FROM work_packages WHERE package_id=?').get(chunk.packageId);
+        if (progress.received_chunks === progress.total_chunks) {
+          this.db.prepare("UPDATE work_packages SET status='ready' WHERE package_id=? AND status='staging'").run(chunk.packageId);
+        }
+      }
       this.audit('delivery.accepted', { messageId: frame.messageId, traceId: frame.traceId, outcome: 'accepted' });
       this.db.exec('COMMIT');
       return { duplicate: false };
@@ -196,6 +289,15 @@ export class LocalStore {
   }
 
   task(taskId) { return this.db.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId); }
+
+  registerOutboundWorkTask(taskId, conversationId) {
+    this.db.prepare('INSERT OR IGNORE INTO outbound_work_tasks(task_id,conversation_id,created_at) VALUES(?,?,?)')
+      .run(taskId, conversationId, new Date().toISOString());
+  }
+
+  outboundWorkTask(taskId, conversationId) {
+    return this.db.prepare('SELECT * FROM outbound_work_tasks WHERE task_id=? AND conversation_id=?').get(taskId, conversationId);
+  }
 
   approveTask(taskId, approvalDigest) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -276,5 +378,135 @@ export class LocalStore {
 
   inboxCount() { return this.db.prepare('SELECT COUNT(*) count FROM inbox').get().count; }
   capsule(capsuleId) { return this.db.prepare('SELECT * FROM capsules WHERE capsule_id=?').get(capsuleId); }
+  workPackage(packageId) { return this.db.prepare('SELECT * FROM work_packages WHERE package_id=?').get(packageId); }
+  workPackageManifest(packageId) {
+    const row = this.workPackage(packageId);
+    return row ? JSON.parse(row.manifest_json) : null;
+  }
+  workPackageChunks(packageId) {
+    return this.db.prepare(`SELECT package_id,task_id,file_path,chunk_index,chunk_count,byte_length,digest,data_blob
+      FROM work_package_chunks WHERE package_id=? ORDER BY file_path,chunk_index`).all(packageId);
+  }
+  approveWorkPackage(packageId, authorizationTaskId) {
+    this.expireWorkPackages();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pkg = this.workPackage(packageId);
+      const task = this.task(authorizationTaskId);
+      if (!pkg || pkg.authorization_task_id !== authorizationTaskId || pkg.status !== 'ready') throw new Error('work_package_not_ready');
+      if (!task || task.state !== 'accepted' || task.capability !== 'work.package') throw new Error('work_package_task_not_accepted');
+      this.db.prepare("UPDATE work_packages SET status='approved',approved_at=? WHERE package_id=?")
+        .run(new Date().toISOString(), packageId);
+      this.audit('work_package.approved', { taskId: authorizationTaskId, outcome: 'approved' });
+      this.db.exec('COMMIT');
+      return this.workPackage(packageId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  beginWorkPackageMaterialization(packageId, destination) {
+    this.expireWorkPackages();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pkg = this.workPackage(packageId);
+      const task = pkg && this.task(pkg.authorization_task_id);
+      if (!pkg || pkg.status !== 'approved' || !task || task.state !== 'accepted') throw new Error('work_package_not_approved');
+      const now = new Date().toISOString();
+      const version = task.state_version + 1;
+      if (typeof destination !== 'string' || destination.length === 0) throw new Error('work_destination_required');
+      this.db.prepare("UPDATE work_packages SET status='materializing',materialized_path=? WHERE package_id=?").run(destination, packageId);
+      this.db.prepare("UPDATE tasks SET state='running',state_version=? WHERE task_id=? AND state_version=?")
+        .run(version, task.task_id, task.state_version);
+      this.db.prepare('INSERT INTO task_events(task_id,state_version,state,previous_state,at) VALUES(?,?,?,?,?)')
+        .run(task.task_id, version, 'running', 'accepted', now);
+      this.audit('work_package.materializing', { taskId: task.task_id, outcome: 'running' });
+      this.db.exec('COMMIT');
+      return this.workPackage(packageId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  retryWorkPackageMaterialization(packageId, destination) {
+    this.expireWorkPackages();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pkg = this.workPackage(packageId);
+      const task = pkg && this.task(pkg.authorization_task_id);
+      if (!pkg || pkg.status !== 'blocked' || !task || task.state !== 'blocked') throw new Error('work_package_not_blocked');
+      if (typeof destination !== 'string' || destination.length === 0) throw new Error('work_destination_required');
+      const now = new Date().toISOString();
+      const version = task.state_version + 1;
+      this.db.prepare("UPDATE work_packages SET status='materializing',materialized_path=? WHERE package_id=?").run(destination, packageId);
+      this.db.prepare("UPDATE tasks SET state='running',state_version=?,error_code=NULL WHERE task_id=? AND state_version=?")
+        .run(version, task.task_id, task.state_version);
+      this.db.prepare('INSERT INTO task_events(task_id,state_version,state,previous_state,at) VALUES(?,?,?,?,?)')
+        .run(task.task_id, version, 'running', 'blocked', now);
+      this.audit('work_package.retrying', { taskId: task.task_id, outcome: 'running' });
+      this.db.exec('COMMIT');
+      return this.workPackage(packageId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  completeWorkPackageMaterialization(packageId, destination) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pkg = this.workPackage(packageId);
+      const task = pkg && this.task(pkg.authorization_task_id);
+      if (!pkg || pkg.status !== 'materializing' || !task || task.state !== 'running') throw new Error('work_package_not_materializing');
+      const version = task.state_version + 1;
+      const now = new Date().toISOString();
+      this.db.prepare("UPDATE work_packages SET status='materialized',materialized_path=? WHERE package_id=?").run(destination, packageId);
+      this.db.prepare('DELETE FROM work_package_chunks WHERE package_id=?').run(packageId);
+      this.db.prepare("UPDATE tasks SET state='completed',state_version=? WHERE task_id=? AND state_version=?")
+        .run(version, task.task_id, task.state_version);
+      this.db.prepare('INSERT INTO task_events(task_id,state_version,state,previous_state,at) VALUES(?,?,?,?,?)')
+        .run(task.task_id, version, 'completed', 'running', now);
+      this.audit('work_package.materialized', { taskId: task.task_id, outcome: 'completed' });
+      this.db.exec('COMMIT');
+      return this.workPackage(packageId);
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  blockWorkPackageMaterialization(packageId) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const pkg = this.workPackage(packageId);
+      const task = pkg && this.task(pkg.authorization_task_id);
+      if (pkg?.status === 'materializing' && task?.state === 'running') {
+        const version = task.state_version + 1;
+        const now = new Date().toISOString();
+        this.db.prepare("UPDATE work_packages SET status='blocked' WHERE package_id=?").run(packageId);
+        this.db.prepare("UPDATE tasks SET state='blocked',state_version=?,error_code='MATERIALIZATION_RECONCILIATION_REQUIRED' WHERE task_id=?")
+          .run(version, task.task_id);
+        this.db.prepare('INSERT INTO task_events(task_id,state_version,state,previous_state,at) VALUES(?,?,?,?,?)')
+          .run(task.task_id, version, 'blocked', 'running', now);
+        this.audit('work_package.blocked', { taskId: task.task_id, outcome: 'blocked', errorCode: 'MATERIALIZATION_RECONCILIATION_REQUIRED' });
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+
+  expireWorkPackages(now = Date.now()) {
+    const expired = this.db.prepare(`SELECT package_id,authorization_task_id FROM work_packages
+      WHERE status NOT IN ('materialized','expired','materializing') AND expires_at<=?`).all(new Date(now).toISOString());
+    if (expired.length === 0) return 0;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const pkg of expired) {
+        const task = this.task(pkg.authorization_task_id);
+        if (task && ['proposed', 'accepted', 'running', 'blocked'].includes(task.state)) {
+          const next = task.state === 'accepted' ? 'cancelled' : 'failed';
+          const version = task.state_version + 1;
+          this.db.prepare('UPDATE tasks SET state=?,state_version=?,error_code=? WHERE task_id=?')
+            .run(next, version, 'WORK_PACKAGE_EXPIRED', task.task_id);
+          this.db.prepare('INSERT INTO task_events(task_id,state_version,state,previous_state,at) VALUES(?,?,?,?,?)')
+            .run(task.task_id, version, next, task.state, new Date(now).toISOString());
+        }
+        this.db.prepare('DELETE FROM work_package_chunks WHERE package_id=?').run(pkg.package_id);
+        this.db.prepare("UPDATE work_packages SET status='expired' WHERE package_id=?").run(pkg.package_id);
+        this.audit('work_package.expired', { taskId: pkg.authorization_task_id, outcome: 'expired', errorCode: 'WORK_PACKAGE_EXPIRED' });
+      }
+      this.db.exec('COMMIT');
+      return expired.length;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
   auditRows() { return this.db.prepare('SELECT * FROM audit_events ORDER BY id').all(); }
 }

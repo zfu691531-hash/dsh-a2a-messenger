@@ -39,6 +39,7 @@ export function validateFrame(frame, { now = Date.now() } = {}) {
   const createdAt = Date.parse(frame.createdAt);
   const expiresAt = Date.parse(frame.expiresAt);
   if (!Number.isFinite(createdAt) || !Number.isFinite(expiresAt) || createdAt >= expiresAt || expiresAt - createdAt > 7 * 86_400_000) throw new Error('invalid_frame_time');
+  if (new Date(createdAt).toISOString() !== frame.createdAt || new Date(expiresAt).toISOString() !== frame.expiresAt) throw new Error('invalid_frame_time');
   if (createdAt > now + 300_000) throw new Error('created_at_in_future');
   if (expiresAt <= now) throw new Error('expired');
   if (frame.algorithm !== 'AES-256-GCM+Ed25519') throw new Error('unsupported_algorithm');

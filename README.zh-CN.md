@@ -2,12 +2,23 @@
 
 [English](README.md)
 
-DSH A2A Messenger 是一个实验性的、可自托管的跨设备 Agent 通信层。`0.1.0`
+DSH A2A Messenger 是一个实验性的、可自托管的跨设备 Agent 通信层。`0.2.0`
 提供稳定的 Agent/设备身份、单聊与群聊、加密消息信封、至少一次可靠投递、经用户
-明确授权的 Context Capsule，以及受权限控制的协作任务状态机。
+明确授权的 Context Capsule，以及受权限控制的协作任务状态机。新增的 Work Package
+可以把“任务说明 + 代码/文件目录”直接发送给对方，也能用同样方式返回结果，不依赖
+GitHub、GitLab 或其他内容平台。
 
-> **验证状态：**MVP 目前仅验证了同一台电脑上的本机 loopback 传输；尚未验证公网
-> 运行或真实跨设备通信。该版本不是生产级软件。
+> **验证状态：**MVP 已在同一台电脑上完成 loopback 与带设备鉴权的 HTTP+SQLite
+> 端到端测试；尚未验证公网或两台真实设备之间的通信。该版本不是生产级软件。
+
+## 最核心的协作流程
+
+1. 一个 Agent 提出任务，并发送装有普通文件或源码目录的 Work Package。
+2. 接收端检查身份、群成员关系、签名、文件声明与本地策略；文件先留在隔离区。
+3. 本地用户批准后，文件才会写入一个全新的独立目录；不会自动合并或执行。
+4. 接收端 Agent 完成工作后，可以把结果目录作为 Work Package 原路返回。
+
+分片、重试、加密和离线队列都隐藏在底层。用户面对的始终只是一个 Work Package。
 
 ## 职责与边界
 
@@ -31,7 +42,7 @@ v1.0.1 规范补丁**核对。项目复用了 Agent Card、Message、Task、Arti
 扩展声明和版本协商等 A2A 概念。
 
 当前适配器只提供字段映射，不实现 A2A HTTP/JSON-RPC、gRPC 或 SSE 服务，也未
-通过官方 SDK 一致性套件。因此 `0.1.0` 不宣称具备 wire-level A2A conformance。
+通过官方 SDK 一致性套件。因此 `0.2.0` 不宣称具备 wire-level A2A conformance。
 
 联系人、稳定设备身份、会话/群聊、成员与密钥 epoch、E2EE、投递游标、审批和
 Context Capsule 都是 Messenger 产品扩展，**不是标准 A2A 字段**。详见
@@ -39,7 +50,7 @@ Context Capsule 都是 Messenger 产品扩展，**不是标准 A2A 字段**。�
 
 ## 安全现状
 
-loopback MVP 对消息正文实施端到端加密，并假设 relay 对正文不可信；relay 仍能看到
+MVP 对消息和 Work Package 正文实施端到端加密，并假设 relay 对正文不可信；relay 仍能看到
 投递元数据。密钥和明文不得进入审计日志；防重放与去重状态持久化；成员变更推进密钥
 epoch；附件以引用传递并校验哈希和长度；工具执行默认拒绝。
 
@@ -84,6 +95,29 @@ dsh-a2a doctor
 dsh-a2a demo
 ```
 
+运行“直接发送代码目录并返回结果”的本机 HTTP 演示：
+
+```sh
+dsh-a2a work-demo
+```
+
+生成每台设备独立的 Relay 凭据并启动自托管 Relay：
+
+```sh
+dsh-a2a relay-token --device-id 你的设备UUID
+cp examples/relay-credentials.example.json relay-credentials.json
+chmod 600 relay-credentials.json
+dsh-a2a relay-serve --credentials relay-credentials.json --db relay.db
+```
+
+请把生成的 43 字符 token 填入本机凭据文件，替换 `REPLACE_ME`。该真实文件已加入
+gitignore，发布门禁也会拒绝它；Relay 数据库只保存哈希，但配置文件本身仍含原始
+Bearer 凭据，必须按秘密保存。
+
+这里的凭据只用于进入 Relay，不是 Agent 身份，也不是用户看到的“协作号”。Relay 默认
+只监听 `127.0.0.1`。非本机明文 HTTP 必须显式添加 `--allow-insecure-network`，仅限受控
+开发环境；真实部署必须在外层配置 TLS。
+
 运行自动化测试和发布门禁：
 
 ```sh
@@ -91,8 +125,9 @@ npm test
 npm run release:check
 ```
 
-该 demo 只能证明单机 loopback 流程，不代表已经验证公网 relay、NAT 穿透或物理设备
-之间的互操作。
+这些 demo 只能证明单机 loopback/HTTP 流程。网络传输已经作为公共模块提供，但本版
+尚未提供完整的持久化配对 UI/CLI；真实多设备接入仍需集成方通过公共 API 保存已验证
+身份和会话。它不代表已经验证公网 Relay、NAT 穿透或物理设备互操作。
 
 最低支持版本中的 Node 内置 SQLite 仍会输出实验性 API 警告；这也是本 MVP 不适合
 生产使用的原因之一。
@@ -107,13 +142,20 @@ npm run release:check
 - 协作任务状态包括 `proposed`、`accepted`、`running`、`blocked`、
   `completed`、`failed` 和 `cancelled`。
 - 审计只记录无正文元数据，并使用 trace/correlation ID 串联状态。
+- Work Package 支持源码/文件直接传输、确定性清单、加密分片、发送者绑定、断网与重启
+  恢复、本地审批、过期/暂存配额，以及校验后写入全新目录。
+- Transport 可替换；当前实现包括 loopback 与带设备鉴权的 HTTP+SQLite Relay。
+- Work Package 从暂存到落盘都绑定发送端的准确设备与密钥版本；成功落盘后删除暂存
+  分片；HTTP 拉取每次最多 16 个帧，并通过游标继续。
+- 落盘中断后，重启只会校验并确认完整结果；未知结果进入 `blocked`，必须显式重试并
+  再次通过当前 policy 与原始设备授权，不会静默重复写入。
 
 项目不承诺全局总序。群成员被移除后不能读取新 epoch 的内容，但无法撤销其已获得的
 历史明文。
 
 ## 项目状态
 
-`0.1.0` 是用于评估协议和安全边界的 MVP。另见
+`0.2.0` 是用于评估协议、直接文件协作和安全边界的 MVP。另见
 [ARCHITECTURE.md](ARCHITECTURE.md)、[CONTRIBUTING.md](CONTRIBUTING.md)和
 [CHANGELOG.md](CHANGELOG.md)。测试范围与尚未验证的边界记录在
 [docs/VALIDATION.md](docs/VALIDATION.md)。安全问题请按负责任披露流程提交，

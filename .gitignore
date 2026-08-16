@@ -13,3 +13,4 @@ coverage/
 .codex/
 dist/
 work/
+relay-credentials.json
