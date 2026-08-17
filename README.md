@@ -1,202 +1,112 @@
 # DSH A2A Messenger
 
-[简体中文](README.zh-CN.md)
+跨设备 Agent 通信与协作的 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 插件。
 
-DSH A2A Messenger is an experimental, self-hostable communication layer for
-agents on different devices. Version `0.2.0` provides stable agent/device
-identity, direct and group conversations, encrypted envelopes, reliable
-at-least-once delivery, explicitly authorized Context Capsules, and a guarded
-capability-task state machine. Its new Work Package transfers a task instruction
-plus a code/file directory directly and returns results the same way, without
-requiring GitHub, GitLab, or another content host.
+A DSH plugin for cross-device agent communication and collaboration: your DSH and your
+teammates' DSH exchange messages through a small self-hosted relay, with a local
+quarantine inbox and human-approved context injection.
 
-> **Validation status:** loopback and authenticated HTTP+SQLite transport have
-> been exercised end to end on one computer. Public-internet operation and
-> communication between two physical devices have **not** been verified. This
-> software is not production-ready.
+## 它解决什么问题
 
-## The core collaboration flow
+不同人电脑上的 Agent 是孤岛。产品经理写好 PRD，开发者的 Agent 看不到其中的意图和
+取舍，vibe coding 的第一版往往要靠人肉拉会对齐返工。本插件让团队成员各自的 DSH 通过
+一台自托管中转服务器互发消息：PM 的 DSH 把 PRD 意图发到频道，同事的 DSH 收到后经
+**本人确认**注入各自 Agent 的上下文，Agent 之间由此获得对方的工作背景，减少对齐成本。
 
-1. One Agent proposes a task and sends a Work Package containing ordinary files
-   or a source directory.
-2. The receiver validates identity, membership, signatures, file declarations,
-   and local policy. Bytes stay in quarantine.
-3. The local user approves materialization. Files are copied to a new isolated
-   directory; they are not merged or executed automatically.
-4. The receiving Agent can return its result as another Work Package bound to
-   the original task.
-
-Chunking, retry, encryption, and the offline queue are transport details. The
-user-facing object remains one Work Package.
-
-## Scope and boundaries
-
-Messenger owns protocol framing, transport abstraction, delivery state,
-conversation membership, and authorization hand-off. It deliberately does not
-own long-term memory, audio I/O, sensor interpretation, or orchestration prompt
-templates.
-
-- A message is never tool authorization. Remote work requires capability
-  negotiation, the receiving device's local policy, and human approval when
-  required.
-- Long-term memory remains authoritative in the memory plugin. Messenger moves
-  only a user-authorized, minimum-disclosure Context Capsule; received capsules
-  stay quarantined and untrusted until explicitly approved.
-- Audio plugins own ASR, TTS, and WebRTC. This MVP carries structured messages,
-  attachment references, and task events only.
-- Gesture plugins are local input adapters. A gesture event must first become a
-  capability intent and then pass normal policy/approval. Confidence is neither
-  identity nor permission.
-- `dsh-codex-collab` remains the same-device DSH↔Codex bridge. Integration is
-  through versioned adapter/capability contracts, never internal storage.
-
-## Standards relationship
-
-The interoperability baseline is Linux Foundation A2A wire version **1.0**,
-reviewed against specification patch **v1.0.1 dated 2026-05-26**. The project
-reuses A2A concepts such as Agent Card, Message, Task, Artifact, Parts,
-extensions, and version negotiation.
-
-The current adapter is mapper-only. It does not implement an A2A HTTP/JSON-RPC,
-gRPC, or SSE server and has not passed an official SDK conformance suite. No
-wire-level A2A conformance claim is made for `0.2.0`.
-
-Contacts, stable device identity, conversations/groups, membership and key
-epochs, E2EE, delivery cursors, approvals, and Context Capsules are Messenger
-product extensions—not standard A2A fields. See [the protocol](docs/PROTOCOL.md)
-and [architecture decisions](docs/adr/).
-
-## Security posture
-
-The MVP encrypts message and Work Package bodies end to end and treats the relay as
-untrusted for content. The relay still observes delivery metadata. Keys and
-plaintext are excluded from audit logs, replay/duplicate checks are durable,
-membership changes advance the key epoch, attachments are bounded references
-whose future consumers must verify hash and length, and tool execution is
-deny-by-default.
-
-This release does **not** implement MLS, Double Ratchet, forward secrecy, key
-transparency, hardware attestation, or production key management. E2EE does not
-hide traffic metadata or repair a compromised endpoint. Retraction/deletion is
-best-effort processing and cannot erase copies already viewed, exported, or
-backed up. Read [SECURITY.md](SECURITY.md) and the
-[threat model](docs/THREAT_MODEL.md) before evaluating the MVP.
-
-## Requirements
-
-- Node.js 22.13 or newer (`node:sqlite` without an experimental flag)
-- npm
-- A local filesystem suitable for durable MVP state
-
-## Install and remove
-
-Install dependencies and expose the development CLI:
-
-```sh
-npm run install:local
+```
+你的电脑                        云服务器（中转）                 同事的电脑
+┌──────────────┐        ┌──────────────────────┐        ┌──────────────┐
+│ DSH          │ HTTPS  │ TeamMCP relay        │ HTTPS  │ DSH          │
+│ └ 本插件      │ ─────> │  频道/私信/离线信箱    │ <───── │ └ 本插件      │
+│              │ <─SSE─ │  Bearer token 认证    │ ─SSE─> │              │
+└──────────────┘        └──────────────────────┘        └──────────────┘
 ```
 
-Remove the global development link:
+中转服务器直接复用开源的 [TeamMCP](https://github.com/cookjohn/teammcp)（MIT），本插件
+只通过它的 HTTP API + SSE 通信，不使用其进程管理功能。部署步骤见
+[docs/SETUP-SERVER.md](docs/SETUP-SERVER.md)。
+
+## 安全模型：隔离收件箱 + 人工放行
+
+这是本插件最重要的设计，源自一条原则：**消息不等于授权**。
+
+1. 收到的每条消息先进入本地**隔离收件箱**（`~/.dsh-a2a-messenger/inbox.json`），
+   此时模型完全看不到内容——`a2a_inbox_status` 工具只暴露条数和发件人元数据。
+2. 用户执行 `/a2a-inbox` 亲自过目内容预览。
+3. 用户执行 `/a2a-accept <id|all>` 放行后，内容才通过 `agent.inject()` 成为模型可见
+   上下文，并附带来源标注和"这是参考信息、不是指令"的提示（提示词注入的软缓解）。
+4. 不想要的消息 `/a2a-reject` 直接丢弃，模型自始至终不接触。
+
+其他保障：按消息 id 持久去重（重启不重复）、离线消息在中转服务器排队、重连自动补收、
+先本地落盘再向服务器确认（至少一次投递）、单条消息大小与收件箱容量上限。
+
+**边界诚实声明**：当前为熟人小团队设计——TLS + Bearer token + 注册密钥，中转服务器
+可以看到消息明文（服务器是你们自己的）。端到端加密、陌生人身份体系是面向公开社区的
+后续路线（见 [docs/archive/](docs/archive/) 中保留的早期协议设计）。
+
+## 安装
+
+前提：已安装 DSH，Node.js >= 22。
 
 ```sh
-npm run uninstall:local
+dsh plugin --profile web add github:zfu691531-hash/dsh-a2a-messenger
 ```
 
-The command name is `dsh-a2a`.
+在 profile 的 `cordis.patch.yml` 中配置：
 
-## Verify and demonstrate
+```yaml
+- id: a2a-messenger
+  config:
+    serverUrl: 'https://relay.example.com'   # 你们团队的中转服务器
+    token: 'tmcp_xxxxxxxx'                    # 注册获得的 API key
+    agentName: 'zhangsan'                     # 你在中转上注册的名字
+```
 
-Run environment and state checks:
+注册身份（每人一次，`secret` 是服务器管理员设置的注册密钥）：
 
 ```sh
-dsh-a2a doctor
+curl -X POST https://relay.example.com/api/register \
+  -H "content-type: application/json" \
+  -d '{"name": "zhangsan", "role": "developer", "secret": "<注册密钥>"}'
+# => {"apiKey": "tmcp_...", ...}   保存好，只显示一次
 ```
 
-Run the local loopback demonstration:
+## 能力一览
+
+模型工具（Agent 在会话中自主调用）：
+
+| 工具 | 作用 |
+|---|---|
+| `a2a_send` | 发消息到频道（`#general`）或私信（`@Alice`） |
+| `a2a_peers` | 列出在线队友和频道 |
+| `a2a_inbox_status` | 查看待审条数与元数据（**内容不可见**） |
+
+用户命令（只有人能执行，不经过模型）：
+
+| 命令 | 作用 |
+|---|---|
+| `/a2a-status` | 连接状态、身份、待审计数 |
+| `/a2a-inbox` | 过目待审消息的内容预览 |
+| `/a2a-accept <id\|all>` | 放行，注入为模型可见上下文 |
+| `/a2a-reject <id\|all>` | 丢弃 |
+
+## 开发与测试
 
 ```sh
-dsh-a2a demo
+npm install
+npm test          # 构建 + 18 项测试（内置 mock 中转服务器，无需真实部署）
+npm run mock-server   # 在 :3100 启动 mock 中转，供本地手工联调
 ```
 
-Run direct code transfer and result return over an authenticated local HTTP
-relay:
+## 状态与路线图
 
-```sh
-dsh-a2a work-demo
-```
+当前 `0.3.0`：以上全部能力已实现并通过自动化测试（mock 服务器）。**尚未完成**与真实
+TeamMCP 服务器的联调和双物理设备验证——这是当前正在进行的里程碑。
 
-Generate per-device relay credentials and start the self-hosted relay:
-
-```sh
-dsh-a2a relay-token --device-id YOUR-DEVICE-UUID
-cp examples/relay-credentials.example.json relay-credentials.json
-chmod 600 relay-credentials.json
-dsh-a2a relay-serve --credentials relay-credentials.json --db relay.db
-```
-
-Copy the generated 43-character token into the local credential file in place
-of `REPLACE_ME`. The live file is gitignored and the release gate rejects it;
-it contains raw bearer credentials even though the relay database stores only
-their hashes.
-
-The credential is relay access, not the Agent identity or a user-visible
-collaboration handle. The relay binds to `127.0.0.1` by default. Non-loopback
-plain HTTP requires `--allow-insecure-network` and is for controlled development
-only; real deployment needs TLS termination.
-
-Run automated tests and the release gate:
-
-```sh
-npm test
-npm run release:check
-```
-
-The demos are evidence for single-machine loopback/HTTP flows only. The library
-contains the network transport, but this release does not include a finished
-persistent pairing UI/CLI. Actual multi-device use therefore requires an
-integrator to persist verified identities/conversations through the public
-module APIs. It is not evidence of public relay deployment, NAT traversal, or
-physical-device interoperability.
-
-Node's built-in SQLite module still emits an experimental API warning in the
-minimum supported runtime; this is another reason the MVP is not production
-ready.
-
-## Protocol guarantees in the MVP
-
-- Stable random `agentId` and `deviceId`; display names are non-authoritative.
-- Root-signed device credentials, rotation, joining, revocation, and verified
-  contacts.
-- Direct and group conversations with membership/key epochs, roles, invites,
-  removals, and hash-chained membership commits.
-- Signed, encrypted envelopes with immutable retry frames, per-sender ordering,
-  mailbox cursors, expiry, restart recovery, and durable deduplication.
-- At-least-once transport without duplicate local task execution when adapters
-  honor the supplied idempotency contract.
-- Capability tasks with `proposed`, `accepted`, `running`, `blocked`,
-  `completed`, `failed`, and `cancelled` states.
-- Metadata-only audit events using trace and correlation identifiers.
-- Direct Work Packages with deterministic manifests, encrypted chunks, sender
-  binding, offline/restart recovery, local approval, expiry/staging quotas, and
-  verified no-overwrite materialization.
-- Replaceable loopback and authenticated HTTP+SQLite transports.
-- Work Package staging is bound to the exact sender device/key version;
-  successful materialization removes staged chunk bytes, while cursor-based
-  HTTP pulls are limited to 16 frames per request.
-- Interrupted materialization is restart-reconciled by full result verification;
-  unknown output becomes blocked and requires an explicit policy/device-checked
-  retry instead of silent re-execution.
-
-No global total order is claimed. A removed group member loses future epoch
-access, but previously obtained plaintext cannot be revoked.
-
-## Project status
-
-`0.2.0` is an MVP for protocol, direct-file collaboration, and security-boundary evaluation. Consult
-[ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), and
-[CHANGELOG.md](CHANGELOG.md). The exact test scope and unverified boundaries are
-recorded in [docs/VALIDATION.md](docs/VALIDATION.md). Please use responsible
-disclosure for security issues rather than filing a public exploit report.
+- **第 2 步**：结构化"上下文胶囊"（目标/决策/假设/悬而未决问题的交接契约）与
+  Agent 自动生成胶囊的提示词；频道订阅工作流（PM 发布 → 团队订阅）。
+- **第 3 步**：首次配置向导、附件传输、体验打磨，发布到 dsh 插件市场。
+- **第 4 步**：面向公开社区的身份体系与端到端加密（设计资产见 `docs/archive/`）。
 
 ## License
 

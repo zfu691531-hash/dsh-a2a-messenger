@@ -1,16 +1,11 @@
+# Dependencies
 node_modules/
-coverage/
-.DS_Store
-*.db
-*.db-shm
-*.db-wal
+
+# Build cache (lib/ itself IS committed so git installs need no build step)
+*.tsbuildinfo
+
+# Local state and logs
 *.log
-*.pem
-*.key
-*.enc
+.DS_Store
+inbox.json
 .env
-.a2a/
-.codex/
-dist/
-work/
-relay-credentials.json
