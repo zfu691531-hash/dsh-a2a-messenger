@@ -1,0 +1,9 @@
+# Bundle layer contributed by dsh-a2a-messenger.
+# Users override `config` in their profile's own cordis.patch.yml.
+- insert:
+    - id: a2a-messenger
+      name: 'dsh-a2a-messenger'
+      config:
+        serverUrl: ''
+        token: ''
+        agentName: ''

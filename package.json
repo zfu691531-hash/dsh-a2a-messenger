@@ -1,51 +1,57 @@
 {
   "name": "dsh-a2a-messenger",
-  "version": "0.2.0",
-  "description": "Local-first encrypted multi-agent messaging with direct Work Package transfer",
+  "version": "0.3.0",
+  "description": "Cross-device agent messaging plugin for DeepSeek Harness (DSH): team relay client, quarantined inbox, human-approved context injection.",
   "type": "module",
-  "license": "MIT",
-  "private": false,
-  "engines": {
-    "node": ">=22.13.0"
-  },
-  "bin": {
-    "dsh-a2a": "src/cli.mjs"
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
   },
   "files": [
-    "src",
-    "schemas",
-    "examples",
-    "docs",
-    "scripts",
+    "lib",
+    "cordis.patch.yml",
     "README.md",
-    "README.zh-CN.md",
-    "LICENSE",
-    "SECURITY.md",
-    "ARCHITECTURE.md",
-    "CHANGELOG.md"
+    "LICENSE"
   ],
   "scripts": {
-    "test": "node --test",
-    "doctor": "node src/cli.mjs doctor",
-    "demo": "node src/cli.mjs demo",
-    "demo:work": "node src/cli.mjs work-demo",
-    "install:local": "sh scripts/install.sh",
-    "uninstall:local": "sh scripts/uninstall.sh",
-    "release:check": "node scripts/release-check.mjs"
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"test/*.test.mjs\"",
+    "mock-server": "node test/mock-teammcp-server.mjs --standalone"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-communication",
+    "a2a",
+    "collaboration"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zfu691531-hash/dsh-a2a-messenger.git"
   },
-  "bugs": {
-    "url": "https://github.com/zfu691531-hash/dsh-a2a-messenger/issues"
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
-  "homepage": "https://github.com/zfu691531-hash/dsh-a2a-messenger#readme",
-  "keywords": [
-    "agent",
-    "a2a",
-    "e2ee",
-    "messaging",
-    "multi-agent"
-  ]
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
 }
