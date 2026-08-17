@@ -23,8 +23,12 @@ quarantine inbox and human-approved context injection.
 ```
 
 中转服务器直接复用开源的 [TeamMCP](https://github.com/cookjohn/teammcp)（MIT），本插件
-只通过它的 HTTP API + SSE 通信，不使用其进程管理功能。部署步骤见
-[docs/SETUP-SERVER.md](docs/SETUP-SERVER.md)。
+只通过它的 HTTP API + SSE 通信，不使用其进程管理功能。两种部署方式任选：
+
+- **云服务器**（月付几十元，最稳）：[docs/SETUP-SERVER.md](docs/SETUP-SERVER.md)
+- **家用电脑 + Cloudflare Tunnel**（零月租，适合验证期）：
+  [docs/SETUP-HOME-PC.md](docs/SETUP-HOME-PC.md)，该文档按 AI Agent 可执行的
+  runbook 编写，可直接交给电脑上的 Codex/Claude 全程代办。
 
 ## 安全模型：隔离收件箱 + 人工放行
 
