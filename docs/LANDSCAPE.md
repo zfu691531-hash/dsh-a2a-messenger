@@ -60,7 +60,32 @@ Anthropic 的实现细节与本项目的隔离收件箱高度一致，可视为�
 > **红线 3**：第 2 步的胶囊必须是结构化交接契约（目标/决策/假设/被否决方案/
 > 悬而未决问题），不用自由散文；接收注入始终经人工放行。
 
-## 四、一句话定位
+## 四、大厂内部的两种形态与定位修正（2026-08 补充）
+
+大厂内部**确实已有** agent 互通，分两种成型形态：
+
+1. **工单系统即协调层**：Atlassian 把 agent 做成 Jira 一等公民（agent 作为经办人
+   出现在看板、可被 @、走 Jira 权限与审计），GitHub Copilot coding agent 可被指派
+   Jira issue、自读描述评论、完工开 PR。agent 之间不直接对话，协调通过工作制品
+   （ticket）中转，前提是团队有工单纪律。参考：
+   [agents in Jira](https://www.atlassian.com/blog/rovo/ai-agents-in-jira)、
+   [Copilot for Jira](https://github.blog/changelog/2026-03-05-github-copilot-coding-agent-for-jira-is-now-in-public-preview/)。
+2. **自建 agent mesh**：Uber 的 MCP Gateway/Registry + 标准化 A2A Client（STS JWT、
+   密码学 actor chain，1500+ agent、每周 6 万次执行）；LinkedIn 复用自家消息基础
+   设施做编排层。参考：
+   [Uber](https://www.uber.com/us/en/blog/solving-the-agent-identity-crisis/)、
+   [LinkedIn](https://www.infoq.com/news/2025/09/linkedin-multi-agent/)。
+
+**由此修正目标用户**：本项目不与企业级身份/权限/审计竞争；服务对象是**没有（也
+不想维护）重工单体系的小团队、初创、独立开发者，以及跨组织临时协作**——后者是
+所有企业产品都不覆盖的场景（Jira/Copilot 均框在单一组织边界内）。
+
+**由此获得的验证**："协调通过工作制品而非对话"是大厂共同结论；上下文胶囊本质是
+一张不依赖 Jira 就能流转的轻量 ticket，等于把该模式搬给无工单纪律的小团队。与
+工单生态不冲突：用户可同时装 Atlassian MCP，远期可做"胶囊 ↔ Jira issue"连接器
+作为团队长大后的迁移路径。
+
+## 五、一句话定位
 
 单人多端（WorkBuddy）、单人多会话（Claude）、企业服务器侧（A2A）三个邻位都有人，
 本项目占的是第四个格子：**跨人跨设备的个人/小团队 Agent 通信层**——用自托管中转、
