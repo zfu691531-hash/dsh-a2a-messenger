@@ -1,7 +1,7 @@
 {
   "name": "dsh-a2a-messenger",
-  "version": "0.3.0",
-  "description": "Cross-device agent messaging plugin for DeepSeek Harness (DSH): team relay client, quarantined inbox, human-approved context injection.",
+  "version": "0.4.0",
+  "description": "Cross-device agent messaging plugin for DeepSeek Harness (DSH): zero-deployment GitHub mailbox, serverless direct P2P sessions, quarantined inbox, human-approved context injection.",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -37,6 +37,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zfu691531-hash/dsh-a2a-messenger.git"
+  },
+  "optionalDependencies": {
+    "@roamhq/wrtc": "^0.10.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

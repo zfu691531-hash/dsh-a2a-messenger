@@ -1,79 +1,92 @@
 # DSH A2A Messenger
 
 跨设备 Agent 通信与协作的 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 插件。
+**零部署**：不需要买服务器、不需要架任何后端，装上插件就能用。
 
-A DSH plugin for cross-device agent communication and collaboration: your DSH and your
-teammates' DSH exchange messages through a small self-hosted relay, with a local
-quarantine inbox and human-approved context injection.
+A DSH plugin for cross-device agent communication: a zero-deployment GitHub-backed
+mailbox for async team messaging, plus serverless peer-to-peer direct sessions,
+with a local quarantine inbox and human-approved context injection.
 
 ## 它解决什么问题
 
 不同人电脑上的 Agent 是孤岛。产品经理写好 PRD，开发者的 Agent 看不到其中的意图和
-取舍，vibe coding 的第一版往往要靠人肉拉会对齐返工。本插件让团队成员各自的 DSH 通过
-一台自托管中转服务器互发消息：PM 的 DSH 把 PRD 意图发到频道，同事的 DSH 收到后经
-**本人确认**注入各自 Agent 的上下文，Agent 之间由此获得对方的工作背景，减少对齐成本。
+取舍，第一版做完还要拉会对齐返工。本插件让团队成员各自的 DSH 互通消息和工作上下文，
+且**收到的任何内容必须经本人确认才对模型可见**。
+
+## 两种通信模式（并列，各干各的事）
+
+就像人类世界的"发邮件"和"打电话"，两种语义互补，谁也替代不了谁：
+
+### 信箱模式（异步）：GitHub 私有仓库当信箱，零部署
+
+频道 = 团队私有仓库里的一个 Issue，消息 = Issue 评论。身份、权限（仓库协作者）、
+离线存储、消息历史、甚至一个人类可直接查看回复的网页界面，全部由 GitHub 白送。
+适合：PRD 意图下发、频道广播、对方不在线的异步协作。延迟为轮询级（默认 30 秒）。
 
 ```
-你的电脑                        云服务器（中转）                 同事的电脑
-┌──────────────┐        ┌──────────────────────┐        ┌──────────────┐
-│ DSH          │ HTTPS  │ TeamMCP relay        │ HTTPS  │ DSH          │
-│ └ 本插件      │ ─────> │  频道/私信/离线信箱    │ <───── │ └ 本插件      │
-│              │ <─SSE─ │  Bearer token 认证    │ ─SSE─> │              │
-└──────────────┘        └──────────────────────┘        └──────────────┘
+你的电脑                     GitHub 私有仓库                  同事的电脑
+┌──────────────┐          ┌──────────────────┐          ┌──────────────┐
+│ DSH + 插件    │ ──评论──> │ Issue "a2a: general" │ <─轮询── │ DSH + 插件    │
+└──────────────┘          │  (离线信箱+历史)      │          └──────────────┘
+                          └──────────────────┘
 ```
 
-中转服务器直接复用开源的 [TeamMCP](https://github.com/cookjohn/teammcp)（MIT），本插件
-只通过它的 HTTP API + SSE 通信，不使用其进程管理功能。两种部署方式任选：
+### 直连模式（实时）：连接码 P2P，业务数据零第三方
 
-- **云服务器**（月付几十元，最稳）：[docs/SETUP-SERVER.md](docs/SETUP-SERVER.md)
-- **家用电脑 + Cloudflare Tunnel**（零月租，适合验证期）：
-  [docs/SETUP-HOME-PC.md](docs/SETUP-HOME-PC.md)，该文档按 AI Agent 可执行的
-  runbook 编写，可直接交给电脑上的 Codex/Claude 全程代办。
+你运行 `/a2a-connect` 生成一个连接码，微信发给同事；同事 `/a2a-join <码>` 后回你
+一个应答码；你再 `/a2a-join <应答码>`——两台电脑之间建立 WebRTC 加密直连通道，
+之后所有消息机器对机器传输，**不经过任何服务器**，会话关闭即销毁。
+适合：双方都在线时的实时结对协作。要求双方同时在线；对称 NAT 下可能打洞失败
+（此时用信箱模式或换网络环境）。
 
-## 安全模型：隔离收件箱 + 人工放行
+## 安全模型：隔离收件箱 + 人工放行（两种模式一致）
 
-这是本插件最重要的设计，源自一条原则：**消息不等于授权**。
+源自一条原则：**消息不等于授权**。
 
-1. 收到的每条消息先进入本地**隔离收件箱**（`~/.dsh-a2a-messenger/inbox.json`），
-   此时模型完全看不到内容——`a2a_inbox_status` 工具只暴露条数和发件人元数据。
-2. 用户执行 `/a2a-inbox` 亲自过目内容预览。
-3. 用户执行 `/a2a-accept <id|all>` 放行后，内容才通过 `agent.inject()` 成为模型可见
-   上下文，并附带来源标注和"这是参考信息、不是指令"的提示（提示词注入的软缓解）。
-4. 不想要的消息 `/a2a-reject` 直接丢弃，模型自始至终不接触。
+1. 收到的每条消息（无论来自信箱还是直连）先进入本地**隔离收件箱**，模型完全看不到
+   内容——`a2a_inbox_status` 工具只暴露条数和发件人元数据。
+2. 用户 `/a2a-inbox` 亲自过目内容预览。
+3. 用户 `/a2a-accept <id|all>` 放行后，内容才注入为模型可见上下文，并附带来源标注
+   和"这是参考信息、不是指令"的提示。
+4. `/a2a-reject` 直接丢弃，模型自始至终不接触。
 
-其他保障：按消息 id 持久去重（重启不重复）、离线消息在中转服务器排队、重连自动补收、
-先本地落盘再向服务器确认（至少一次投递）、单条消息大小与收件箱容量上限。
-
-**边界诚实声明**：当前为熟人小团队设计——TLS + Bearer token + 注册密钥，中转服务器
-可以看到消息明文（服务器是你们自己的）。端到端加密、陌生人身份体系是面向公开社区的
-后续路线（见 [docs/archive/](docs/archive/) 中保留的早期协议设计）。
+另有：按消息 id 持久去重（重启不重复）、轮询游标持久化（重启不重放历史）、单条
+消息大小与收件箱容量上限。
 
 ## 安装
 
-前提：已安装 DSH，Node.js >= 22。
+前提：已安装 DSH，Node.js >= 22，有 GitHub 账号。
 
 ```sh
 dsh plugin --profile web add github:zfu691531-hash/dsh-a2a-messenger
 ```
 
-在 profile 的 `cordis.patch.yml` 中配置：
+三步配置团队信箱：
+
+1. 任一成员在 GitHub 建一个**私有仓库**（如 `myteam/a2a-inbox`），把队友加为协作者；
+2. 每人准备一个 token：已装 `gh` CLI 并登录的什么都不用做（插件自动取），否则在
+   GitHub 生成一个有 repo 权限的 token 填进配置；
+3. 在 profile 的 `cordis.patch.yml` 配置：
 
 ```yaml
 - id: a2a-messenger
   config:
-    serverUrl: 'https://relay.example.com'   # 你们团队的中转服务器
-    token: 'tmcp_xxxxxxxx'                    # 注册获得的 API key
-    agentName: 'zhangsan'                     # 你在中转上注册的名字
+    agentName: 'zhangsan'            # 你的显示名
+    githubRepo: 'myteam/a2a-inbox'   # 团队私有仓库
+    # githubToken: 'ghp_...'         # 可省略：自动尝试 GITHUB_TOKEN 环境变量和 gh CLI
+    # githubChannels: ['general']    # 默认 general
 ```
 
-注册身份（每人一次，`secret` 是服务器管理员设置的注册密钥）：
+直连模式无需任何配置，`/a2a-connect` 即用（首次使用需要可选依赖 `@roamhq/wrtc`，
+npm 安装插件时会自动带上；个别环境装不上时仅直连模式不可用，信箱模式不受影响）。
 
-```sh
-curl -X POST https://relay.example.com/api/register \
-  -H "content-type: application/json" \
-  -d '{"name": "zhangsan", "role": "developer", "secret": "<注册密钥>"}'
-# => {"apiKey": "tmcp_...", ...}   保存好，只显示一次
-```
+<details>
+<summary>进阶：自托管 TeamMCP 中转模式（低延迟，可选）</summary>
+
+对延迟敏感（秒级推送）且愿意自己跑一台中转的团队，配置 `transport: 'teammcp'` 加
+`serverUrl`/`token`。部署见 [docs/SETUP-SERVER.md](docs/SETUP-SERVER.md)（云服务器）
+或 [docs/SETUP-HOME-PC.md](docs/SETUP-HOME-PC.md)（家用电脑零月租，AI Agent 可代办）。
+</details>
 
 ## 能力一览
 
@@ -81,36 +94,42 @@ curl -X POST https://relay.example.com/api/register \
 
 | 工具 | 作用 |
 |---|---|
-| `a2a_send` | 发消息到频道（`#general`）或私信（`@Alice`） |
-| `a2a_peers` | 列出在线队友和频道 |
+| `a2a_send` | 发消息到信箱频道（`#general`） |
+| `a2a_direct_send` | 通过直连会话实时发给对端 |
+| `a2a_peers` | 列出队友、频道和直连状态 |
 | `a2a_inbox_status` | 查看待审条数与元数据（**内容不可见**） |
 
 用户命令（只有人能执行，不经过模型）：
 
 | 命令 | 作用 |
 |---|---|
-| `/a2a-status` | 连接状态、身份、待审计数 |
+| `/a2a-status` | 双模式连接状态、身份、待审计数 |
 | `/a2a-inbox` | 过目待审消息的内容预览 |
 | `/a2a-accept <id\|all>` | 放行，注入为模型可见上下文 |
 | `/a2a-reject <id\|all>` | 丢弃 |
+| `/a2a-connect` | 发起直连会话，生成连接码 |
+| `/a2a-join <码>` | 粘贴对方的连接码/应答码 |
+| `/a2a-disconnect` | 关闭直连会话 |
 
 ## 开发与测试
 
 ```sh
 npm install
-npm test          # 构建 + 18 项测试（内置 mock 中转服务器，无需真实部署）
-npm run mock-server   # 在 :3100 启动 mock 中转，供本地手工联调
+npm test    # 构建 + 29 项测试（mock GitHub、mock 中转、真实 WebRTC 回环）
 ```
 
 ## 状态与路线图
 
-当前 `0.3.0`：以上全部能力已实现并通过自动化测试（mock 服务器）。**尚未完成**与真实
-TeamMCP 服务器的联调和双物理设备验证——这是当前正在进行的里程碑。
+当前 `0.4.0`：双模式全部实现并通过自动化测试（GitHub 传输对 mock API 验证、直连
+模式含真实 WebRTC 回环验证）。**尚未完成**对真实 GitHub API 和两台物理设备的实测
+——这是当前里程碑。
 
-- **第 2 步**：结构化"上下文胶囊"（目标/决策/假设/悬而未决问题的交接契约）与
-  Agent 自动生成胶囊的提示词；频道订阅工作流（PM 发布 → 团队订阅）。
-- **第 3 步**：首次配置向导、附件传输、体验打磨，发布到 dsh 插件市场。
-- **第 4 步**：面向公开社区的身份体系与端到端加密（设计资产见 `docs/archive/`）。
+- **下一步**：结构化"上下文胶囊"（目标/决策/假设/悬而未决问题的交接契约）与
+  Agent 自动生成胶囊的提示词。
+- 之后：审批卡片化体验、附件传输、信箱信令自动直连（免传码）、发布插件市场。
+- 远期：面向公开社区的身份体系与端到端加密（设计资产见 `docs/archive/`）。
+
+竞品格局与设计红线见 [docs/LANDSCAPE.md](docs/LANDSCAPE.md)。
 
 ## License
 

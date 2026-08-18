@@ -1,32 +1,43 @@
 import type { QuarantineInbox } from './inbox.js';
-import { type SseState } from './sse.js';
-import { type TeamMcpClient } from './teammcp-client.js';
+import type { Transport, TransportSendInput, TransportState } from './transport.js';
 import type { QuarantinedMessage } from './types.js';
 export interface MessengerServiceOptions {
-    client: TeamMcpClient;
+    transport: Transport;
     inbox: QuarantineInbox;
-    /** Own display name; incoming events from this sender are ignored. */
+    /** Own display name; used as a final self-echo filter. */
     selfName: string;
     onQuarantined?: (msg: QuarantinedMessage) => void;
-    onStateChange?: (state: SseState) => void;
+    onStateChange?: (state: TransportState) => void;
     onError?: (err: unknown) => void;
-    minRetryMs?: number;
-    maxRetryMs?: number;
 }
 /**
- * Connects the relay to the local quarantine inbox: subscribes to the live
- * SSE stream, and on every (re)connect pulls the relay-side offline inbox so
- * messages sent while this device was offline are not lost. Storage is
- * at-least-once (store locally first, then ack); duplicates are dropped by id.
+ * Binds a transport to the local quarantine inbox. Every incoming message —
+ * regardless of transport — is persisted as pending and stays model-invisible
+ * until the user approves it. Duplicates are dropped by message id.
  */
 export declare class MessengerService {
     private readonly opts;
-    private subscription;
+    private started;
     constructor(opts: MessengerServiceOptions);
-    get connectionState(): SseState;
+    get connectionState(): TransportState;
+    get transportKind(): string;
     start(): void;
     stop(): Promise<void>;
-    /** Pull the relay-side offline inbox, quarantine everything, then ack. */
-    catchUp(): Promise<number>;
-    private handleEvent;
+    send(input: TransportSendInput): Promise<{
+        id?: string;
+    }>;
+    peers(): Promise<{
+        name: string;
+        online?: boolean;
+        role?: string;
+    }[]>;
+    channels(): Promise<string[]>;
+    /** Quarantine one incoming message from any source (transport or direct session). */
+    intake(msg: {
+        id: string;
+        from: string;
+        channel?: string;
+        content: string;
+        ts: number;
+    }): void;
 }

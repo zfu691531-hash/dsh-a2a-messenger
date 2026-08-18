@@ -1,6 +1,6 @@
+import type { DirectSessionManager } from './direct/session.js';
 import type { QuarantineInbox } from './inbox.js';
 import type { MessengerService } from './service.js';
-import type { TeamMcpClient } from './teammcp-client.js';
 import type { QuarantinedMessage } from './types.js';
 export declare const PLUGIN_NAME = "a2a-messenger";
 export interface AgentLike {
@@ -56,16 +56,11 @@ export declare function parseTarget(target: string): {
 } | undefined;
 /** Render an accepted message as model-visible context. */
 export declare function formatInjection(msg: QuarantinedMessage): string;
-export interface ToolDeps {
-    client: TeamMcpClient;
+export interface SurfaceDeps {
+    service: MessengerService;
+    direct: DirectSessionManager;
     inbox: QuarantineInbox;
     selfName: string;
 }
-export declare function buildToolDefs(deps: ToolDeps): ToolDefinitionLike[];
-export interface CommandDeps {
-    inbox: QuarantineInbox;
-    service: MessengerService;
-    serverUrl: string;
-    agentName: string;
-}
-export declare function buildCommandDefs(deps: CommandDeps): CommandDefinitionLike[];
+export declare function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[];
+export declare function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[];

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0 — 2026-08-18
+
+Zero-deployment pivot: no server required. Two peer transport modes, both
+first-class, feeding the same quarantine inbox.
+
+### Added
+
+- **GitHub mailbox transport (default)**: a private team repository acts as
+  the relay — channels are issues (`a2a: <name>`), messages are comments.
+  Identity, access control (collaborators), offline storage, history, and a
+  human-readable web UI come from GitHub. Polling with a persisted cursor;
+  token auto-resolution (config → GITHUB_TOKEN/GH_TOKEN → `gh auth token`).
+- **Direct P2P sessions**: `/a2a-connect` produces a compressed connect code
+  carried over any chat app; `/a2a-join` answers and completes. Traffic flows
+  machine-to-machine over an encrypted WebRTC data channel with no server;
+  sessions are destroyed on close. WebRTC engine (`@roamhq/wrtc`) is an
+  optional dependency — where it cannot install, only direct mode is off.
+- New surface: `a2a_direct_send` tool; `/a2a-connect`, `/a2a-join`,
+  `/a2a-disconnect` commands; `/a2a-status` reports both modes.
+- `Transport` interface; the TeamMCP relay is now one pluggable transport
+  (`transport: 'teammcp'`), demoted to an optional low-latency mode.
+- Tests: 29 total, including a mock GitHub API server and a real WebRTC
+  loopback (offer/answer codes, bidirectional delivery, quarantine semantics).
+
+### Changed
+
+- Config schema reworked: `agentName` + `transport` selection; GitHub options
+  (`githubRepo`, `githubToken`, `githubChannels`, `githubPollSeconds`);
+  TeamMCP options (`serverUrl`, `token`) now optional.
+- All incoming messages — mailbox or direct — go through the same quarantine
+  inbox and human approval flow.
+
 ## 0.3.0 — 2026-08-17
 
 Complete reorientation: from a standalone encrypted messaging CLI to a
