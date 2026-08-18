@@ -1,6 +1,6 @@
+import type { DirectSessionManager } from './direct/session.js'
 import type { QuarantineInbox } from './inbox.js'
 import type { MessengerService } from './service.js'
-import type { TeamMcpClient } from './teammcp-client.js'
 import type { QuarantinedMessage } from './types.js'
 
 export const PLUGIN_NAME = 'a2a-messenger'
@@ -69,7 +69,7 @@ export function parseTarget(target: string): { channel?: string; to?: string } |
 
 /** Render an accepted message as model-visible context. */
 export function formatInjection(msg: QuarantinedMessage): string {
-  const via = msg.channel ? `#${msg.channel}` : 'direct message'
+  const via = msg.channel === 'direct' ? 'direct session' : msg.channel ? `#${msg.channel}` : 'direct message'
   const sent = new Date(msg.ts).toISOString()
   return [
     `[${PLUGIN_NAME}] Incoming team message, reviewed and accepted by the local user.`,
@@ -87,23 +87,25 @@ function previewOf(content: string, max = 120): string {
   return flat.length <= max ? flat : `${flat.slice(0, max)}…`
 }
 
-export interface ToolDeps {
-  client: TeamMcpClient
+export interface SurfaceDeps {
+  service: MessengerService
+  direct: DirectSessionManager
   inbox: QuarantineInbox
   selfName: string
 }
 
-export function buildToolDefs(deps: ToolDeps): ToolDefinitionLike[] {
+export function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[] {
   const send: ToolDefinitionLike = {
     name: 'a2a_send',
     description:
-      'Send a plain-text message to a teammate agent through the team relay. ' +
-      'Target is "channel:<name>" (or "#<name>") for a channel, or "dm:<agentName>" (or "@<agentName>") for a direct message.',
+      'Send a plain-text message to teammates through the async mailbox transport. ' +
+      'Target is "channel:<name>" (or "#<name>"). Delivery is asynchronous: offline ' +
+      'teammates receive it when they come back online.',
     parameters: {
       target: {
         type: 'string',
         required: true,
-        description: 'Where to send: "channel:general", "#general", "dm:Alice" or "@Alice".',
+        description: 'Where to send: "channel:general" or "#general".',
       },
       content: {
         type: 'string',
@@ -115,12 +117,12 @@ export function buildToolDefs(deps: ToolDeps): ToolDefinitionLike[] {
     async execute(args) {
       const target = parseTarget(args.target ?? '')
       if (!target) {
-        return `Invalid target "${args.target}". Use "channel:<name>", "#<name>", "dm:<agentName>" or "@<agentName>".`
+        return `Invalid target "${args.target}". Use "channel:<name>" or "#<name>".`
       }
       const content = args.content ?? ''
       if (content.trim().length === 0) return 'Refused: empty message content.'
       try {
-        const receipt = await deps.client.send({ ...target, content })
+        const receipt = await deps.service.send({ ...target, content })
         const where = target.channel ? `#${target.channel}` : `@${target.to}`
         return `Sent to ${where}${receipt.id ? ` (id ${receipt.id})` : ''}.`
       } catch (err) {
@@ -129,26 +131,60 @@ export function buildToolDefs(deps: ToolDeps): ToolDefinitionLike[] {
     },
   }
 
+  const directSend: ToolDefinitionLike = {
+    name: 'a2a_direct_send',
+    description:
+      'Send a plain-text message to the peer over the live direct (peer-to-peer) session. ' +
+      'Only works while a direct session is connected (the user establishes one with /a2a-connect). ' +
+      'Traffic goes machine-to-machine with no server in between.',
+    parameters: {
+      content: {
+        type: 'string',
+        required: true,
+        description: 'Plain-text message body.',
+      },
+    },
+    output: TEXT_OUTPUT,
+    async execute(args) {
+      const content = args.content ?? ''
+      if (content.trim().length === 0) return 'Refused: empty message content.'
+      try {
+        const receipt = deps.direct.send(content)
+        return `Sent directly to ${deps.direct.peerName || 'peer'} (id ${receipt.id}).`
+      } catch (err) {
+        return `Direct send failed: ${(err as Error).message}`
+      }
+    },
+  }
+
   const peers: ToolDefinitionLike = {
     name: 'a2a_peers',
-    description: 'List teammate agents and channels currently known to the team relay.',
+    description: 'List teammates and channels known to the mailbox transport, plus direct-session state.',
     parameters: {},
     output: TEXT_OUTPUT,
     async execute() {
       try {
-        const [agents, channels] = await Promise.all([deps.client.agents(), deps.client.channels()])
-        const agentLines = agents
-          .filter((a) => a.name !== deps.selfName)
-          .map((a) => `- ${a.name}${a.role ? ` (${a.role})` : ''}${a.online === false ? ' [offline]' : ''}`)
-        const channelLines = channels.map((c) => `- #${c}`)
+        const [peerList, channelList] = await Promise.all([
+          deps.service.peers(),
+          deps.service.channels(),
+        ])
+        const peerLines = peerList
+          .filter((p) => p.name !== deps.selfName)
+          .map((p) => `- ${p.name}${p.role ? ` (${p.role})` : ''}${p.online === false ? ' [offline]' : ''}`)
+        const channelLines = channelList.map((c) => `- #${c}`)
+        const directLine =
+          deps.direct.state === 'connected'
+            ? `Direct session: connected to ${deps.direct.peerName}`
+            : `Direct session: ${deps.direct.state}`
         return [
-          `Teammates (${agentLines.length}):`,
-          ...(agentLines.length > 0 ? agentLines : ['- none']),
+          `Teammates (${peerLines.length}):`,
+          ...(peerLines.length > 0 ? peerLines : ['- none']),
           `Channels (${channelLines.length}):`,
           ...(channelLines.length > 0 ? channelLines : ['- none']),
+          directLine,
         ].join('\n')
       } catch (err) {
-        return `Relay query failed: ${(err as Error).message}`
+        return `Query failed: ${(err as Error).message}`
       }
     },
   }
@@ -176,26 +212,19 @@ export function buildToolDefs(deps: ToolDeps): ToolDefinitionLike[] {
     },
   }
 
-  return [send, peers, inboxStatus]
+  return [send, directSend, peers, inboxStatus]
 }
 
-export interface CommandDeps {
-  inbox: QuarantineInbox
-  service: MessengerService
-  serverUrl: string
-  agentName: string
-}
-
-export function buildCommandDefs(deps: CommandDeps): CommandDefinitionLike[] {
+export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
   const status: CommandDefinitionLike = {
     name: 'a2a-status',
-    description: 'Show relay connection state and quarantine inbox counters.',
+    description: 'Show transport state, direct-session state, and quarantine inbox counters.',
     handler: () => ({
       kind: 'success',
       text: [
-        `relay: ${deps.serverUrl}`,
-        `identity: ${deps.agentName}`,
-        `connection: ${deps.service.connectionState}`,
+        `identity: ${deps.selfName}`,
+        `mailbox transport: ${deps.service.transportKind} (${deps.service.connectionState})`,
+        `direct session: ${deps.direct.state}${deps.direct.peerName ? ` with ${deps.direct.peerName}` : ''}`,
         `pending messages: ${deps.inbox.pendingCount()}`,
       ].join('\n'),
     }),
@@ -274,5 +303,69 @@ export function buildCommandDefs(deps: CommandDeps): CommandDefinitionLike[] {
     },
   }
 
-  return [status, listInbox, accept, reject]
+  const connect: CommandDefinitionLike = {
+    name: 'a2a-connect',
+    description:
+      'Start a direct (peer-to-peer) session: generates a connect code to send to your peer over any chat app.',
+    handler: async () => {
+      try {
+        const code = await deps.direct.createOffer()
+        return {
+          kind: 'success',
+          text: [
+            'Direct session offer created. Send this connect code to your peer (WeChat/any chat):',
+            '',
+            code,
+            '',
+            'They run /a2a-join <code>, send you back their answer code, and you run /a2a-join <answer code> to finish.',
+          ].join('\n'),
+        }
+      } catch (err) {
+        return { kind: 'error', text: `Could not create offer: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const join: CommandDefinitionLike = {
+    name: 'a2a-join',
+    description:
+      'Paste a connect code from your peer: an offer code joins their session (returns an answer code); an answer code completes yours.',
+    input: { hint: 'connect code (A2A1-...)' },
+    handler: async (invocation) => {
+      const code = invocation.rawInput.trim()
+      if (code.length === 0) return { kind: 'error', text: 'Usage: /a2a-join <connect code>' }
+      try {
+        const result = await deps.direct.accept(code)
+        if (result.answerCode) {
+          return {
+            kind: 'success',
+            text: [
+              'Offer accepted. Send this answer code back to your peer:',
+              '',
+              result.answerCode,
+              '',
+              'The session connects as soon as they run /a2a-join with it.',
+            ].join('\n'),
+          }
+        }
+        return {
+          kind: 'success',
+          text: 'Answer accepted; connecting. Check /a2a-status — state becomes "connected" once the tunnel is up.',
+        }
+      } catch (err) {
+        return { kind: 'error', text: `Join failed: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const disconnect: CommandDefinitionLike = {
+    name: 'a2a-disconnect',
+    description: 'Close the direct session and discard its connection state.',
+    handler: async () => {
+      await deps.direct.close()
+      return { kind: 'success', text: 'Direct session closed.' }
+    },
+  }
+
+  return [status, listInbox, accept, reject, connect, join, disconnect]
 }

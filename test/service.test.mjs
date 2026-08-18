@@ -7,6 +7,7 @@ import { startMockTeamMcp } from './mock-teammcp-server.mjs'
 import { QuarantineInbox } from '../lib/inbox.js'
 import { MessengerService } from '../lib/service.js'
 import { TeamMcpClient } from '../lib/teammcp-client.js'
+import { TeamMcpTransport } from '../lib/transports/teammcp.js'
 
 function tempInbox() {
   return QuarantineInbox.open(join(mkdtempSync(join(tmpdir(), 'a2a-svc-')), 'inbox.json'))
@@ -22,23 +23,31 @@ async function waitFor(predicate, timeoutMs = 5000, stepMs = 25) {
   }
 }
 
-test('live message flows into quarantine via SSE', async () => {
+async function twoClients(relay) {
+  const alice = await TeamMcpClient.register(relay.url, { name: 'alice' })
+  const bob = await TeamMcpClient.register(relay.url, { name: 'bob' })
+  return {
+    aliceClient: new TeamMcpClient({ baseUrl: relay.url, token: alice.apiKey }),
+    bobClient: new TeamMcpClient({ baseUrl: relay.url, token: bob.apiKey }),
+  }
+}
+
+function bobService(bobClient, inbox, extra = {}) {
+  const transport = new TeamMcpTransport({ client: bobClient, selfName: 'bob' })
+  return {
+    transport,
+    service: new MessengerService({ transport, inbox, selfName: 'bob', ...extra }),
+  }
+}
+
+test('teammcp: live message flows into quarantine via SSE', async () => {
   const relay = await startMockTeamMcp()
   const inbox = tempInbox()
   let service
   try {
-    const alice = await TeamMcpClient.register(relay.url, { name: 'alice' })
-    const bob = await TeamMcpClient.register(relay.url, { name: 'bob' })
-    const aliceClient = new TeamMcpClient({ baseUrl: relay.url, token: alice.apiKey })
-    const bobClient = new TeamMcpClient({ baseUrl: relay.url, token: bob.apiKey })
-
+    const { aliceClient, bobClient } = await twoClients(relay)
     const quarantined = []
-    service = new MessengerService({
-      client: bobClient,
-      inbox,
-      selfName: 'bob',
-      onQuarantined: (m) => quarantined.push(m),
-    })
+    ;({ service } = bobService(bobClient, inbox, { onQuarantined: (m) => quarantined.push(m) }))
     service.start()
     await waitFor(() => service.connectionState === 'connected')
 
@@ -48,7 +57,6 @@ test('live message flows into quarantine via SSE', async () => {
     assert.equal(quarantined.length, 1)
     assert.equal(quarantined[0].from, 'alice')
     assert.equal(quarantined[0].status, 'pending')
-    // Nothing auto-accepted: the message is pending until the user decides.
     assert.equal(inbox.listPending()[0].content, 'align on PRD section 3')
   } finally {
     await service?.stop()
@@ -56,25 +64,19 @@ test('live message flows into quarantine via SSE', async () => {
   }
 })
 
-test('messages sent while offline are recovered on connect and acked', async () => {
+test('teammcp: offline messages are recovered on connect and acked', async () => {
   const relay = await startMockTeamMcp()
   const inbox = tempInbox()
   let service
   try {
-    const alice = await TeamMcpClient.register(relay.url, { name: 'alice' })
-    const bob = await TeamMcpClient.register(relay.url, { name: 'bob' })
-    const aliceClient = new TeamMcpClient({ baseUrl: relay.url, token: alice.apiKey })
-    const bobClient = new TeamMcpClient({ baseUrl: relay.url, token: bob.apiKey })
+    const { aliceClient, bobClient } = await twoClients(relay)
 
     // Bob offline: two messages queue on the relay.
     await aliceClient.send({ channel: 'general', content: 'first' })
     await aliceClient.send({ to: 'bob', content: 'second' })
-
-    service = new MessengerService({ client: bobClient, inbox, selfName: 'bob' })
+    ;({ service } = bobService(bobClient, inbox))
     service.start()
     await waitFor(() => inbox.pendingCount() === 2)
-
-    // Relay-side inbox must be acked after local storage succeeded.
     await waitFor(async () => (await bobClient.inbox()).length === 0)
   } finally {
     await service?.stop()
@@ -82,28 +84,42 @@ test('messages sent while offline are recovered on connect and acked', async () 
   }
 })
 
-test('dedup: catch-up after live delivery does not duplicate messages', async () => {
+test('teammcp: catch-up after live delivery does not duplicate messages', async () => {
   const relay = await startMockTeamMcp()
   const inbox = tempInbox()
   let service
+  let transport
   try {
-    const alice = await TeamMcpClient.register(relay.url, { name: 'alice' })
-    const bob = await TeamMcpClient.register(relay.url, { name: 'bob' })
-    const aliceClient = new TeamMcpClient({ baseUrl: relay.url, token: alice.apiKey })
-    const bobClient = new TeamMcpClient({ baseUrl: relay.url, token: bob.apiKey })
-
-    service = new MessengerService({ client: bobClient, inbox, selfName: 'bob' })
+    const { aliceClient, bobClient } = await twoClients(relay)
+    ;({ service, transport } = bobService(bobClient, inbox))
     service.start()
     await waitFor(() => service.connectionState === 'connected')
 
     await aliceClient.send({ channel: 'general', content: 'once only' })
     await waitFor(() => inbox.pendingCount() === 1)
 
-    const added = await service.catchUp() // extra catch-up must not duplicate
-    assert.equal(added, 0)
+    await transport.catchUp() // extra catch-up re-delivers nothing new
     assert.equal(inbox.pendingCount(), 1)
   } finally {
     await service?.stop()
     await relay.close()
   }
+})
+
+test('service.intake filters self-echo regardless of transport', () => {
+  const inbox = tempInbox()
+  const noopTransport = {
+    kind: 'noop',
+    state: 'idle',
+    start() {},
+    async stop() {},
+    async send() {
+      return {}
+    },
+  }
+  const service = new MessengerService({ transport: noopTransport, inbox, selfName: 'bob' })
+  service.intake({ id: 'x1', from: 'bob', content: 'my own echo', ts: Date.now() })
+  service.intake({ id: 'x2', from: 'alice', content: 'real message', ts: Date.now() })
+  assert.equal(inbox.pendingCount(), 1)
+  assert.equal(inbox.listPending()[0].from, 'alice')
 })
