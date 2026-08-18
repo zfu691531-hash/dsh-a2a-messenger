@@ -1,7 +1,11 @@
 import type { DirectSessionManager } from './direct/session.js'
+import type { DirectIdentity } from './direct/identity.js'
+import { encodeContactCard } from './contacts.js'
+import type { ContactStore } from './contacts.js'
 import type { QuarantineInbox } from './inbox.js'
 import type { MessengerService } from './service.js'
 import type { QuarantinedMessage } from './types.js'
+import type { RendezvousCoordinator } from './rendezvous.js'
 
 export const PLUGIN_NAME = 'a2a-messenger'
 
@@ -92,6 +96,10 @@ export interface SurfaceDeps {
   direct: DirectSessionManager
   inbox: QuarantineInbox
   selfName: string
+  deviceName?: string
+  identity?: DirectIdentity
+  contacts?: ContactStore
+  rendezvous?: RendezvousCoordinator
 }
 
 export function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[] {
@@ -112,6 +120,10 @@ export function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[] {
         required: true,
         description: 'Plain-text message body.',
       },
+      route: {
+        type: 'string',
+        description: 'Optional explicit mailbox route, e.g. "github" or "filesystem".',
+      },
     },
     output: TEXT_OUTPUT,
     async execute(args) {
@@ -122,7 +134,11 @@ export function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[] {
       const content = args.content ?? ''
       if (content.trim().length === 0) return 'Refused: empty message content.'
       try {
-        const receipt = await deps.service.send({ ...target, content })
+        const receipt = await deps.service.send({
+          ...target,
+          content,
+          ...(args.route ? { route: args.route } : {}),
+        })
         const where = target.channel ? `#${target.channel}` : `@${target.to}`
         return `Sent to ${where}${receipt.id ? ` (id ${receipt.id})` : ''}.`
       } catch (err) {
@@ -136,7 +152,7 @@ export function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[] {
     description:
       'Send a plain-text message to the peer over the live direct (peer-to-peer) session. ' +
       'Only works while a direct session is connected (the user establishes one with /a2a-connect). ' +
-      'Traffic goes machine-to-machine with no server in between.',
+      'Traffic uses the negotiated WebRTC path; /a2a-doctor shows whether STUN or TURN is configured.',
     parameters: {
       content: {
         type: 'string',
@@ -223,9 +239,12 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
       kind: 'success',
       text: [
         `identity: ${deps.selfName}`,
+        `device: ${deps.deviceName ?? 'default'}`,
         `direct fingerprint: ${deps.direct.localFingerprint}`,
         `mailbox transport: ${deps.service.transportKind} (${deps.service.connectionState})`,
+        `mailbox details: ${JSON.stringify(deps.service.diagnostics())}`,
         `direct session: ${deps.direct.state}${deps.direct.peerName ? ` with ${deps.direct.peerName} (${deps.direct.peerFingerprint})` : ''}`,
+        `direct path: ${JSON.stringify(deps.direct.diagnostics)}`,
         `pending messages: ${deps.inbox.pendingCount()}`,
       ].join('\n'),
     }),
@@ -234,14 +253,157 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
   const identity: CommandDefinitionLike = {
     name: 'a2a-identity',
     description: 'Show the local direct-session identity entry to exchange with a trusted peer.',
-    handler: () => ({
-      kind: 'success',
-      text: [
-        'Send this entry to the peer over a trusted channel:',
-        `${deps.selfName}=${deps.direct.localFingerprint}`,
-        'They add it to trustedPeers; add their entry to your trustedPeers before connecting.',
-      ].join('\n'),
-    }),
+    handler: () => {
+      if (deps.identity) {
+        return {
+          kind: 'success',
+          text: [
+            'Send this signed pairing card over a trusted channel:',
+            encodeContactCard(deps.selfName, deps.deviceName ?? 'default', deps.identity),
+            `Verify the fingerprint out of band: ${deps.direct.localFingerprint}`,
+          ].join('\n'),
+        }
+      }
+      return {
+        kind: 'success',
+        text: `${deps.selfName}=${deps.direct.localFingerprint}`,
+      }
+    },
+  }
+
+  const pair: CommandDefinitionLike = {
+    name: 'a2a-pair',
+    description: 'Create a signed device pairing card for a peer.',
+    handler: () => {
+      if (!deps.identity) return { kind: 'error', text: 'Pairing identity is unavailable.' }
+      return {
+        kind: 'success',
+        text: [
+          `Pairing card for ${deps.selfName}@${deps.deviceName ?? 'default'}:`,
+          encodeContactCard(deps.selfName, deps.deviceName ?? 'default', deps.identity),
+          `Confirm this fingerprint through another channel: ${deps.identity.fingerprint}`,
+        ].join('\n'),
+      }
+    },
+  }
+
+  const pairAccept: CommandDefinitionLike = {
+    name: 'a2a-pair-accept',
+    description: 'Validate and save a signed peer pairing card as TOFU trust.',
+    input: { hint: 'signed pairing card (A2AC1-...)' },
+    handler: (invocation) => {
+      if (!deps.contacts) return { kind: 'error', text: 'Contact storage is unavailable.' }
+      try {
+        const contact = deps.contacts.acceptCard(invocation.rawInput.trim())
+        return {
+          kind: 'success',
+          text: `Saved ${contact.name}@${contact.deviceName} as TOFU. Verify fingerprint ${contact.fingerprint} out of band, then run /a2a-verify ${contact.name}@${contact.deviceName} ${contact.fingerprint.slice(-12)}.`,
+        }
+      } catch (err) {
+        return { kind: 'error', text: `Pairing failed: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const contacts: CommandDefinitionLike = {
+    name: 'a2a-contacts',
+    description: 'List paired people, devices, fingerprints, and trust state.',
+    handler: () => {
+      const list = deps.contacts?.list() ?? []
+      return {
+        kind: 'success',
+        text: list.length === 0
+          ? 'No contacts. Exchange /a2a-pair cards over a trusted channel.'
+          : list.map((contact) =>
+              `- ${contact.name}@${contact.deviceName} [${contact.trust}] ${contact.fingerprint}`,
+            ).join('\n'),
+      }
+    },
+  }
+
+  const verifyContact: CommandDefinitionLike = {
+    name: 'a2a-verify',
+    description: 'Mark a TOFU contact verified after comparing its fingerprint out of band.',
+    input: { hint: 'name@device fingerprint-suffix' },
+    handler: (invocation) => {
+      if (!deps.contacts) return { kind: 'error', text: 'Contact storage is unavailable.' }
+      const [selector, suffix] = invocation.rawInput.trim().split(/\s+/, 2)
+      if (!selector || !suffix) return { kind: 'error', text: 'Usage: /a2a-verify <name@device> <fingerprint-suffix>' }
+      try {
+        const contact = deps.contacts.verify(selector, suffix)
+        return { kind: 'success', text: `Verified ${contact.name}@${contact.deviceName}.` }
+      } catch (err) {
+        return { kind: 'error', text: `Verify failed: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const untrust: CommandDefinitionLike = {
+    name: 'a2a-untrust',
+    description: 'Revoke a paired device immediately.',
+    input: { hint: 'name@device or fingerprint' },
+    handler: (invocation) => {
+      if (!deps.contacts) return { kind: 'error', text: 'Contact storage is unavailable.' }
+      try {
+        const contact = deps.contacts.revoke(invocation.rawInput.trim())
+        return { kind: 'success', text: `Revoked ${contact.name}@${contact.deviceName}.` }
+      } catch (err) {
+        return { kind: 'error', text: `Revoke failed: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const call: CommandDefinitionLike = {
+    name: 'a2a-call',
+    description: 'Start a direct session and exchange signed SDP automatically over a sealed mailbox route.',
+    input: { hint: 'name@device [route]' },
+    handler: async (invocation) => {
+      if (!deps.rendezvous) return { kind: 'error', text: 'Automatic rendezvous is unavailable.' }
+      const [peer, route] = invocation.rawInput.trim().split(/\s+/, 2)
+      if (!peer) return { kind: 'error', text: 'Usage: /a2a-call <name@device> [route]' }
+      try {
+        await deps.rendezvous.call(peer, route)
+        return { kind: 'success', text: `Encrypted direct-session offer sent to ${peer}${route ? ` via ${route}` : ''}.` }
+      } catch (err) {
+        return { kind: 'error', text: `Call failed: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const doctor: CommandDefinitionLike = {
+    name: 'a2a-doctor',
+    description: 'Gather local ICE candidates and report routing/privacy facts without opening a session.',
+    handler: async () => {
+      try {
+        const direct = await deps.direct.diagnose()
+        return {
+          kind: 'success',
+          text: [
+            `ICE policy: ${direct.policy}`,
+            `Third-party discovery contacted: ${direct.serverContact}`,
+            `Candidate types: ${direct.candidateTypes.join(', ') || 'none'}`,
+            `Protocols: ${direct.protocols.join(', ') || 'none'}`,
+            `Mailbox: ${JSON.stringify(deps.service.diagnostics())}`,
+          ].join('\n'),
+        }
+      } catch (err) {
+        return { kind: 'error', text: `Diagnostics failed: ${(err as Error).message}` }
+      }
+    },
+  }
+
+  const receipts: CommandDefinitionLike = {
+    name: 'a2a-receipts',
+    description: 'Show recent direct-message delivery states.',
+    handler: () => {
+      const list = deps.direct.receipts()
+      return {
+        kind: 'success',
+        text: list.length === 0
+          ? 'No direct delivery receipts.'
+          : list.map((receipt) => `- ${receipt.id}: ${receipt.status} at ${new Date(receipt.updatedAt).toISOString()}`).join('\n'),
+      }
+    },
   }
 
   const listInbox: CommandDefinitionLike = {
@@ -382,5 +544,22 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
     },
   }
 
-  return [status, identity, listInbox, accept, reject, connect, join, disconnect]
+  return [
+    status,
+    identity,
+    pair,
+    pairAccept,
+    contacts,
+    verifyContact,
+    untrust,
+    call,
+    doctor,
+    receipts,
+    listInbox,
+    accept,
+    reject,
+    connect,
+    join,
+    disconnect,
+  ]
 }

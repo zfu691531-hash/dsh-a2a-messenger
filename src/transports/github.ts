@@ -38,6 +38,7 @@ export class GitHubTransportError extends Error {
 }
 
 const CHANNEL_LABEL = 'a2a-channel'
+const PRIVATE_MAILBOX_CHANNEL = '__mailbox__'
 
 /**
  * Zero-deployment mailbox transport on top of a private GitHub repository.
@@ -53,7 +54,7 @@ export class GitHubTransport implements Transport {
   private timer: ReturnType<typeof setTimeout> | undefined
   private stopped = false
   private selfLogin = ''
-  private readonly issueByChannel = new Map<string, number>()
+  private readonly issuesByChannel = new Map<string, number[]>()
   private cursor = ''
   private readonly pollIntervalMs: number
   private readonly fetchImpl: typeof fetch
@@ -89,11 +90,13 @@ export class GitHubTransport implements Transport {
 
   async send(input: TransportSendInput): Promise<{ id?: string }> {
     if (input.to) {
-      throw new GitHubTransportError(
-        'direct messages are not supported on the github transport; post to a channel, or use a direct session (/a2a-connect)',
-      )
+      if (!input.content.trim().startsWith('DSH1-')) {
+        throw new GitHubTransportError(
+          'github readable direct messages are not supported; use a direct session or sealed mailbox encryption',
+        )
+      }
     }
-    const channel = input.channel
+    const channel = input.to ? PRIVATE_MAILBOX_CHANNEL : input.channel
     if (!channel) throw new GitHubTransportError('send requires a channel')
     const issue = await this.ensureChannelIssue(channel)
     const raw = (await this.request('POST', `/repos/${this.opts.repo}/issues/${issue}/comments`, {
@@ -113,6 +116,10 @@ export class GitHubTransport implements Transport {
 
   async channels(): Promise<string[]> {
     return [...this.opts.channels]
+  }
+
+  diagnostics(): Record<string, unknown> {
+    return { repo: this.opts.repo, polling: true, relay: true }
   }
 
   private setState(state: TransportState): void {
@@ -139,6 +146,7 @@ export class GitHubTransport implements Transport {
     const user = (await this.request('GET', '/user')) as Record<string, unknown>
     this.selfLogin = typeof user.login === 'string' ? user.login : ''
     for (const channel of this.opts.channels) await this.ensureChannelIssue(channel)
+    await this.ensureChannelIssue(PRIVATE_MAILBOX_CHANNEL)
     this.cursor = this.loadCursor()
   }
 
@@ -162,21 +170,24 @@ export class GitHubTransport implements Transport {
   async pollOnce(): Promise<number> {
     let delivered = 0
     let maxSeen = this.cursor
-    for (const [channel, issue] of this.issueByChannel) {
-      const since = encodeURIComponent(this.cursor)
-      const raw = await this.request(
-        'GET',
-        `/repos/${this.opts.repo}/issues/${issue}/comments?since=${since}&per_page=100`,
-      )
-      if (!Array.isArray(raw)) continue
-      for (const item of raw) {
-        const msg = this.normalizeComment(item, channel)
-        if (!msg) continue
-        const createdAt = new Date(msg.ts).toISOString()
-        if (createdAt > maxSeen) maxSeen = createdAt
-        if (msg.from === this.selfLogin) continue
-        this.handlers?.onMessage(msg)
-        delivered++
+    await this.refreshChannelIssues()
+    for (const [channel, issues] of this.issuesByChannel) {
+      for (const issue of issues) {
+        const since = encodeURIComponent(this.cursor)
+        const raw = await this.request(
+          'GET',
+          `/repos/${this.opts.repo}/issues/${issue}/comments?since=${since}&per_page=100`,
+        )
+        if (!Array.isArray(raw)) continue
+        for (const item of raw) {
+          const msg = this.normalizeComment(item, channel)
+          if (!msg) continue
+          const createdAt = new Date(msg.ts).toISOString()
+          if (createdAt > maxSeen) maxSeen = createdAt
+          if (msg.from === this.selfLogin) continue
+          this.handlers?.onMessage(msg)
+          delivered++
+        }
       }
     }
     if (maxSeen !== this.cursor) {
@@ -201,21 +212,17 @@ export class GitHubTransport implements Transport {
   }
 
   private async ensureChannelIssue(channel: string): Promise<number> {
-    const cached = this.issueByChannel.get(channel)
+    const cached = this.issuesByChannel.get(channel)?.[0]
     if (cached !== undefined) return cached
     const title = `a2a: ${channel}`
     const list = await this.request(
       'GET',
       `/repos/${this.opts.repo}/issues?state=open&labels=${CHANNEL_LABEL}&per_page=100`,
     )
-    if (Array.isArray(list)) {
-      for (const item of list) {
-        const r = item as Record<string, unknown>
-        if (r.title === title && typeof r.number === 'number') {
-          this.issueByChannel.set(channel, r.number)
-          return r.number
-        }
-      }
+    const matches = matchingIssueNumbers(list, title)
+    if (matches.length > 0) {
+      this.issuesByChannel.set(channel, matches)
+      return matches[0]!
     }
     const created = (await this.request('POST', `/repos/${this.opts.repo}/issues`, {
       title,
@@ -225,8 +232,21 @@ export class GitHubTransport implements Transport {
     if (typeof created.number !== 'number') {
       throw new GitHubTransportError('failed to create channel issue')
     }
-    this.issueByChannel.set(channel, created.number)
+    this.issuesByChannel.set(channel, [created.number])
     return created.number
+  }
+
+  /** Concurrent first starts can create duplicate same-title issues; watch every copy. */
+  private async refreshChannelIssues(): Promise<void> {
+    const list = await this.request(
+      'GET',
+      `/repos/${this.opts.repo}/issues?state=open&labels=${CHANNEL_LABEL}&per_page=100`,
+    )
+    const channels = [...new Set([...this.opts.channels, PRIVATE_MAILBOX_CHANNEL])]
+    for (const channel of channels) {
+      const matches = matchingIssueNumbers(list, `a2a: ${channel}`)
+      if (matches.length > 0) this.issuesByChannel.set(channel, matches)
+    }
   }
 
   private async request(method: string, path: string, body?: unknown): Promise<unknown> {
@@ -281,4 +301,14 @@ export class GitHubTransport implements Transport {
       // Cursor persistence is best-effort; inbox dedup covers replays.
     }
   }
+}
+
+function matchingIssueNumbers(raw: unknown, title: string): number[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .flatMap((item) => {
+      const record = item as Record<string, unknown>
+      return record.title === title && typeof record.number === 'number' ? [record.number] : []
+    })
+    .sort((a, b) => a - b)
 }

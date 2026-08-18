@@ -58,14 +58,33 @@ export interface DirectSessionOptions {
     selfName: string;
     identity: DirectIdentity;
     /** Trusted fingerprint -> expected display name. Empty means deny every peer. */
-    trustedPeers: ReadonlyMap<string, string>;
-    onMessage: (msg: IncomingMessage) => void;
+    trustedPeers: ReadonlyMap<string, string> | (() => ReadonlyMap<string, string>);
+    onMessage: (msg: IncomingMessage) => 'added' | 'duplicate' | 'rejected-too-large' | 'rejected-inbox-full' | 'self' | void;
     onStateChange?: (state: DirectState) => void;
     /** Injectable WebRTC module (tests); defaults to lazy `@roamhq/wrtc`. */
     rtcModule?: RtcModuleLike;
     stunServers?: string[];
+    icePolicy?: IcePolicy;
+    turnServers?: string[];
+    turnUsername?: string;
+    turnCredential?: string;
     /** Max time to wait for ICE gathering before using what we have. */
     gatherTimeoutMs?: number;
+}
+export type IcePolicy = 'strict' | 'stun' | 'relay';
+export type DirectReceiptStatus = 'sent' | 'quarantined' | 'accepted' | 'rejected' | 'expired';
+export interface DirectReceipt {
+    id: string;
+    status: DirectReceiptStatus;
+    updatedAt: number;
+}
+export interface DirectDiagnostics {
+    policy: IcePolicy;
+    stunServers: string[];
+    turnServers: string[];
+    candidateTypes: string[];
+    protocols: string[];
+    serverContact: 'none' | 'stun' | 'turn';
 }
 export declare class DirectSessionManager {
     private readonly opts;
@@ -75,11 +94,16 @@ export declare class DirectSessionManager {
     private remoteName;
     private remoteFingerprint;
     private pendingSessionId;
+    private readonly deliveryReceipts;
+    private lastCandidateTypes;
+    private lastProtocols;
     constructor(opts: DirectSessionOptions);
     get state(): DirectState;
     get peerName(): string;
     get peerFingerprint(): string;
     get localFingerprint(): string;
+    get diagnostics(): DirectDiagnostics;
+    receipts(): DirectReceipt[];
     /** Start a session: returns the offer connect-code to hand to the peer. */
     createOffer(): Promise<string>;
     /**
@@ -93,12 +117,15 @@ export declare class DirectSessionManager {
     send(content: string): {
         id: string;
     };
+    acknowledge(deliveryId: string, status: 'accepted' | 'rejected'): void;
+    diagnose(): Promise<DirectDiagnostics>;
     close(): Promise<void>;
     private iceConfig;
     private setState;
     private watchConnection;
     private attachChannel;
     private verifyPeer;
+    private captureCandidates;
     private waitIceGathering;
 }
 export {};

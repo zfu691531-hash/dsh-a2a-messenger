@@ -1,4 +1,4 @@
-import type { QuarantineInbox } from './inbox.js'
+import type { AddResult, QuarantineInbox } from './inbox.js'
 import type { Transport, TransportSendInput, TransportState } from './transport.js'
 import type { QuarantinedMessage } from './types.js'
 
@@ -19,6 +19,7 @@ export interface MessengerServiceOptions {
  */
 export class MessengerService {
   private started = false
+  private protocolHandler: ((msg: QuarantinedMessage) => boolean | Promise<boolean>) | undefined
 
   constructor(private readonly opts: MessengerServiceOptions) {}
 
@@ -34,7 +35,14 @@ export class MessengerService {
     if (this.started) return
     this.started = true
     this.opts.transport.start({
-      onMessage: (msg) => this.intake(msg),
+      onMessage: (msg) => {
+        if (msg.protocol && this.protocolHandler) {
+          void Promise.resolve(this.protocolHandler({ ...msg, receivedAt: Date.now(), status: 'pending' }))
+            .catch((err) => this.opts.onError?.(err))
+          return
+        }
+        this.intake(msg)
+      },
       onStateChange: (state) => this.opts.onStateChange?.(state),
       onError: (err) => this.opts.onError?.(err),
     })
@@ -59,11 +67,24 @@ export class MessengerService {
   }
 
   /** Quarantine one incoming message from any source (transport or direct session). */
-  intake(msg: { id: string; from: string; channel?: string; content: string; ts: number }): void {
-    if (msg.from === this.opts.selfName) return
-    if (this.opts.inbox.add(msg) === 'added') {
+  intake(msg: { id: string; from: string; fromFingerprint?: string; channel?: string; content: string; ts: number; route?: string; security?: 'readable' | 'sealed' | 'direct'; protocol?: 'rendezvous'; deliveryId?: string }): AddResult | 'self' {
+    if (msg.from === this.opts.selfName) return 'self'
+    const result = this.opts.inbox.add(msg)
+    if (result === 'added') {
       const stored = this.opts.inbox.get(msg.id)
       if (stored) this.opts.onQuarantined?.(stored)
+    }
+    return result
+  }
+
+  setProtocolHandler(handler: (msg: QuarantinedMessage) => boolean | Promise<boolean>): void {
+    this.protocolHandler = handler
+  }
+
+  diagnostics(): Record<string, unknown> {
+    return this.opts.transport.diagnostics?.() ?? {
+      route: this.opts.transport.kind,
+      state: this.opts.transport.state,
     }
   }
 }

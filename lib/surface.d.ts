@@ -1,7 +1,10 @@
 import type { DirectSessionManager } from './direct/session.js';
+import type { DirectIdentity } from './direct/identity.js';
+import type { ContactStore } from './contacts.js';
 import type { QuarantineInbox } from './inbox.js';
 import type { MessengerService } from './service.js';
 import type { QuarantinedMessage } from './types.js';
+import type { RendezvousCoordinator } from './rendezvous.js';
 export declare const PLUGIN_NAME = "a2a-messenger";
 export interface AgentLike {
     inject(message: {
@@ -61,6 +64,10 @@ export interface SurfaceDeps {
     direct: DirectSessionManager;
     inbox: QuarantineInbox;
     selfName: string;
+    deviceName?: string;
+    identity?: DirectIdentity;
+    contacts?: ContactStore;
+    rendezvous?: RendezvousCoordinator;
 }
 export declare function buildToolDefs(deps: SurfaceDeps): ToolDefinitionLike[];
 export declare function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[];

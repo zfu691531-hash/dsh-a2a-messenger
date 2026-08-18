@@ -14,6 +14,10 @@ export interface TransportSendInput {
     channel?: string;
     to?: string;
     content: string;
+    /** Explicit route when more than one transport is active. */
+    route?: string;
+    /** Internal protocol payloads are never shown as ordinary inbox messages. */
+    kind?: 'message' | 'rendezvous';
 }
 export interface TransportPeer {
     name: string;
@@ -33,4 +37,6 @@ export interface Transport {
     peers?(): Promise<TransportPeer[]>;
     /** Optional list of channels this transport is watching. */
     channels?(): Promise<string[]>;
+    /** Human-readable operational details without exposing credentials. */
+    diagnostics?(): Record<string, unknown>;
 }

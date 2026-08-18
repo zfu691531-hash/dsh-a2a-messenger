@@ -1,65 +1,37 @@
-# Direct session trust setup
+# Direct trust and device identity
 
-Direct sessions use WebRTC DataChannel for encrypted peer-to-peer traffic. They do not use
-GitHub, TeamMCP, paste services, or TURN for message forwarding.
+Each installation owns one persistent device identity in `direct-identity.json`:
 
-## 1. Start in direct-only mode
+- Ed25519 signs pairing cards, WebRTC offer/answer codes, and mailbox envelopes;
+- X25519 derives per-envelope AES-256-GCM keys;
+- a random `deviceId` separates devices from the mutable person/display name.
 
-Configure each machine with its own stable display name:
+The v0.4 identity format migrates in place: the Ed25519 key and fingerprint remain unchanged while encryption keys and `deviceId` are added. Never share or sync this private identity file.
 
-```yaml
-- id: a2a-messenger
-  config:
-    agentName: 'alice'
-    transport: 'none'
-    trustedPeers: []
-```
+## Pairing
 
-The plugin creates a persistent Ed25519 identity in
-`~/.dsh-a2a-messenger/direct-identity.json`. This file contains the private key. Do not send
-it to anyone, commit it, or place it in a shared folder. Back it up securely: deleting it
-creates a new identity that peers will not trust.
+1. Each device runs `/a2a-pair`.
+2. Exchange the `A2AC1-...` cards through an authenticated channel.
+3. Run `/a2a-pair-accept <card>`; the contact starts as TOFU.
+4. Compare the complete Ed25519 fingerprint out of band.
+5. Run `/a2a-verify name@device <fingerprint-suffix>`.
 
-## 2. Exchange fingerprints
+Multiple devices may have the same person name. Address them as `name@device`; the cryptographic fingerprint, not the display label, is authoritative. `/a2a-untrust` revokes one local device record immediately. Legacy `trustedPeers` entries remain accepted for direct sessions but lack mailbox encryption keys until a pairing card is exchanged.
 
-On each machine, run:
+## Signaling and transport boundary
 
-```text
-/a2a-identity
-```
+- Manual mode carries signed `A2A2-...` codes through a channel selected by the users.
+- Automatic mode carries the same signed codes inside an authenticated, expiring sealed mailbox envelope.
+- SDP contains IP addresses and ICE candidates. Manual codes expose them to the carrying channel; sealed automatic signaling hides the payload from the mailbox provider, but not traffic metadata.
+- WebRTC encrypts the data channel. `strict` and `stun` aim for a direct data path; `relay` explicitly sends data through configured TURN.
 
-Exchange the returned `name=ed25519:fingerprint` entries over an already trusted channel,
-such as an in-person QR check or an existing authenticated chat. Compare the whole entry.
+## Message boundary
 
-Alice then configures Bob's entry:
+- Session identity is taken from the verified A2A2 signing key, never peer-supplied message JSON.
+- Incoming text remains quarantined until the local user accepts it.
+- Direct receipts report network/quarantine state and later local accept/reject state; they do not mean the model followed the message.
+- Pairing authenticates a device, not every statement its user or agent sends.
 
-```yaml
-trustedPeers:
-  - 'bob=ed25519:REPLACE_WITH_BOBS_FULL_FINGERPRINT'
-```
+## Cryptographic limitations
 
-Bob configures Alice's entry in the same way. Restart DSH after changing configuration.
-An empty list rejects every incoming direct connection.
-
-## 3. Connect
-
-1. Alice runs `/a2a-connect` and sends the signed `A2A2-...` offer code to Bob.
-2. Bob runs `/a2a-join <offer-code>` and sends the resulting answer code to Alice.
-3. Alice runs `/a2a-join <answer-code>`.
-4. Both users verify `/a2a-status` shows the expected peer name and fingerprint.
-
-Old unsigned `A2A1` codes are deliberately rejected; both peers must run the hardened
-version.
-
-## Security boundary
-
-- The signature prevents signaling modification and binds the configured peer name to a
-  stable public key.
-- The answer is bound to the pending offer's session id.
-- Message sender identity comes from the verified session, never from message JSON.
-- Incoming text remains quarantined until the local user runs `/a2a-accept`.
-- Direct messages cannot request or invoke local tools or shell commands.
-- Connection codes contain SDP and network candidates. Signing does not hide them; exchange
-  codes only through a channel you accept for this metadata.
-- WebRTC can expose network addresses to the peer. Without TURN, strict or symmetric NAT may
-  prevent the connection; the plugin fails instead of relaying business traffic.
+Mailbox sealing uses static X25519 device keys, random message IDs and IVs, HKDF-SHA256, AES-256-GCM, and an Ed25519 envelope signature. It provides confidentiality, integrity, sender authentication, expiry, and recipient binding, but not Signal-style forward secrecy or global revocation. A stolen device key requires local revocation on every peer and a new pairing card.

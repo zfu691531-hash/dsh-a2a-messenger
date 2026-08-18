@@ -91,7 +91,7 @@ test('direct session loopback: mutual trust, signed codes, P2P delivery, bound p
     selfName: 'alice',
     identity: aliceIdentity,
     trustedPeers: new Map([[bobIdentity.fingerprint, 'bob']]),
-    onMessage: (m) => aliceGot.push(m),
+    onMessage: (m) => { aliceGot.push(m); return 'added' },
     rtcModule: wrtc,
     stunServers: [],
   })
@@ -99,7 +99,7 @@ test('direct session loopback: mutual trust, signed codes, P2P delivery, bound p
     selfName: 'bob',
     identity: bobIdentity,
     trustedPeers: new Map([[aliceIdentity.fingerprint, 'alice']]),
-    onMessage: (m) => bobGot.push(m),
+    onMessage: (m) => { bobGot.push(m); return 'added' },
     rtcModule: wrtc,
     stunServers: [],
   })
@@ -125,7 +125,7 @@ test('direct session loopback: mutual trust, signed codes, P2P delivery, bound p
     assert.equal(alice.state, 'connected')
     assert.equal(bob.state, 'connected')
 
-    alice.send('hello from alice')
+    const aliceReceipt = alice.send('hello from alice')
     bob.send('hello from bob')
     // A malicious peer-supplied display name must not override the authenticated session identity.
     alice.dc.send(JSON.stringify({ id: 'forged-name', name: 'mallory', content: 'still alice', ts: Date.now() }))
@@ -140,6 +140,15 @@ test('direct session loopback: mutual trust, signed codes, P2P delivery, bound p
     assert.equal(bobGot[1].from, 'alice')
     assert.equal(bobGot[1].content, 'still alice')
     assert.equal(aliceGot[0].from, 'bob')
+    const receiptDeadline = Date.now() + 5_000
+    while (alice.receipts()[0]?.status !== 'quarantined' && Date.now() < receiptDeadline) {
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    assert.deepEqual(alice.receipts()[0], {
+      id: aliceReceipt.id,
+      status: 'quarantined',
+      updatedAt: alice.receipts()[0].updatedAt,
+    })
 
     assert.throws(() => alice.send('x'.repeat(64 * 1024 + 1)), /exceeds 65536 bytes/)
     assert.throws(

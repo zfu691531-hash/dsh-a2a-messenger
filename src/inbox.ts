@@ -23,6 +23,7 @@ export class QuarantineInbox {
   private readonly maxPending: number
   private readonly maxContentBytes: number
   private readonly maxDecided: number
+  private readonly decisionListeners = new Set<(message: QuarantinedMessage) => void>()
 
   private constructor(
     private readonly filePath: string,
@@ -86,6 +87,11 @@ export class QuarantineInbox {
     return this.decide(id, 'rejected')
   }
 
+  onDecision(listener: (message: QuarantinedMessage) => void): () => void {
+    this.decisionListeners.add(listener)
+    return () => this.decisionListeners.delete(listener)
+  }
+
   /** Decide every pending message at once; returns the affected messages. */
   decideAll(status: Exclude<QuarantineStatus, 'pending'>): QuarantinedMessage[] {
     const affected: QuarantinedMessage[] = []
@@ -93,6 +99,7 @@ export class QuarantineInbox {
       m.status = status
       m.decidedAt = Date.now()
       affected.push(m)
+      this.notifyDecision(m)
     }
     if (affected.length > 0) this.persist()
     return affected
@@ -104,7 +111,12 @@ export class QuarantineInbox {
     m.status = status
     m.decidedAt = Date.now()
     this.persist()
+    this.notifyDecision(m)
     return m
+  }
+
+  private notifyDecision(message: QuarantinedMessage): void {
+    for (const listener of this.decisionListeners) listener(message)
   }
 
   private persist(): void {
