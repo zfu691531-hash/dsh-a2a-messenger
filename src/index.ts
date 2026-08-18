@@ -6,6 +6,8 @@ import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { DirectSessionManager } from './direct/session.js'
 import { openDirectIdentity } from './direct/identity.js'
+import { ContactStore } from './contacts.js'
+import { MailboxEnvelopeCodec } from './mailbox-envelope.js'
 import { QuarantineInbox } from './inbox.js'
 import { MessengerService } from './service.js'
 import { buildCommandDefs, buildToolDefs, PLUGIN_NAME } from './surface.js'
@@ -13,20 +15,35 @@ import { TeamMcpClient } from './teammcp-client.js'
 import type { Transport } from './transport.js'
 import { GitHubTransport } from './transports/github.js'
 import { NoneTransport } from './transports/none.js'
+import { CompositeTransport } from './transports/composite.js'
+import { FilesystemTransport } from './transports/filesystem.js'
+import { SecureTransport } from './transports/secure.js'
 import { TeamMcpTransport } from './transports/teammcp.js'
+import { RendezvousCoordinator } from './rendezvous.js'
 
 export const name = PLUGIN_NAME
 export const inject = ['tools', 'commands']
 
 export interface Config {
   agentName: string
-  transport: 'none' | 'github' | 'teammcp'
+  deviceName: string
+  transport: 'none' | 'github' | 'filesystem' | 'teammcp'
   dataDir: string
   trustedPeers: string[]
   githubRepo: string
   githubToken: string
   githubChannels: string[]
   githubPollSeconds: number
+  filesystemDir: string
+  filesystemPollSeconds: number
+  mailboxEncryption: 'readable' | 'sealed'
+  mailboxRoute: string
+  mailboxTtlHours: number
+  directIcePolicy: 'strict' | 'stun' | 'relay'
+  stunServers: string[]
+  turnServers: string[]
+  turnUsername: string
+  turnCredential: string
   serverUrl: string
   token: string
 }
@@ -35,9 +52,12 @@ export const Config: Schema<Config> = Schema.object({
   agentName: Schema.string()
     .required()
     .description('Your display name shown to teammates'),
-  transport: Schema.union(['none', 'github', 'teammcp'] as const)
+  deviceName: Schema.string()
+    .default(os.hostname())
+    .description('This device label; identity remains stable if the display name changes'),
+  transport: Schema.union(['none', 'github', 'filesystem', 'teammcp'] as const)
     .default('github')
-    .description('Async mailbox transport: "none" (direct-only), "github", or "teammcp"'),
+    .description('Primary async mailbox transport: "none", "github", "filesystem", or "teammcp"'),
   dataDir: Schema.string()
     .default('')
     .description('Local state directory; empty means ~/.dsh-a2a-messenger'),
@@ -57,6 +77,32 @@ export const Config: Schema<Config> = Schema.object({
   githubPollSeconds: Schema.number()
     .default(30)
     .description('github transport: poll interval in seconds (minimum 5)'),
+  filesystemDir: Schema.string()
+    .default('')
+    .description('Shared mailbox directory (Syncthing/OneDrive/NAS); also enables it beside the primary route'),
+  filesystemPollSeconds: Schema.number()
+    .default(5)
+    .description('filesystem transport: poll interval in seconds (minimum 1)'),
+  mailboxEncryption: Schema.union(['readable', 'sealed'] as const)
+    .default('readable')
+    .description('Mailbox visibility: readable compatibility mode or fail-closed end-to-end sealed mode'),
+  mailboxRoute: Schema.string()
+    .default('')
+    .description('Default route when multiple transports are active; empty uses the primary transport'),
+  mailboxTtlHours: Schema.number()
+    .default(168)
+    .description('Sealed async message lifetime in hours; automatic rendezvous is always limited to 10 minutes'),
+  directIcePolicy: Schema.union(['strict', 'stun', 'relay'] as const)
+    .default('stun')
+    .description('strict=host candidates only, stun=direct NAT traversal, relay=TURN-only'),
+  stunServers: Schema.array(Schema.string())
+    .default(['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'])
+    .description('STUN URLs used only by the stun ICE policy'),
+  turnServers: Schema.array(Schema.string())
+    .default([])
+    .description('TURN URLs used only by the relay ICE policy; no relay is bundled'),
+  turnUsername: Schema.string().default('').description('TURN username'),
+  turnCredential: Schema.string().default('').role('secret').description('TURN credential'),
   serverUrl: Schema.string()
     .default('')
     .description('teammcp transport: relay base URL, e.g. https://relay.example.com'),
@@ -115,27 +161,48 @@ export function parseTrustedPeers(entries: readonly string[]): ReadonlyMap<strin
   return peers
 }
 
-export function buildTransport(config: Config, dataDir: string): Transport {
+export function buildTransport(
+  config: Config,
+  dataDir: string,
+  security?: { codec: MailboxEnvelopeCodec; mode: 'readable' | 'sealed' },
+): Transport {
   if (config.transport === 'none') return new NoneTransport()
+  const transports: Transport[] = []
   if (config.transport === 'teammcp') {
     if (!config.serverUrl || !config.token) {
       throw new Error(`[${PLUGIN_NAME}] teammcp transport needs serverUrl and token in the plugin config`)
     }
-    return new TeamMcpTransport({
+    transports.push(new TeamMcpTransport({
       client: new TeamMcpClient({ baseUrl: config.serverUrl, token: config.token }),
       selfName: config.agentName,
-    })
+    }))
+  } else if (config.transport === 'filesystem') {
+    if (!config.filesystemDir) throw new Error(`[${PLUGIN_NAME}] filesystem transport needs filesystemDir`)
+  } else {
+    if (!config.githubRepo) {
+      throw new Error(`[${PLUGIN_NAME}] github transport needs githubRepo ("owner/name") in the plugin config`)
+    }
+    transports.push(new GitHubTransport({
+      repo: config.githubRepo,
+      token: resolveGitHubToken(config.githubToken),
+      channels: config.githubChannels.length > 0 ? config.githubChannels : ['general'],
+      pollIntervalMs: config.githubPollSeconds * 1000,
+      cursorFile: path.join(dataDir, 'github-cursor.json'),
+    }))
   }
-  if (!config.githubRepo) {
-    throw new Error(`[${PLUGIN_NAME}] github transport needs githubRepo ("owner/name") in the plugin config`)
+  if (config.filesystemDir) {
+    transports.push(new FilesystemTransport({
+      directory: config.filesystemDir,
+      selfName: config.agentName,
+      pollIntervalMs: (config.filesystemPollSeconds ?? 5) * 1000,
+    }))
   }
-  return new GitHubTransport({
-    repo: config.githubRepo,
-    token: resolveGitHubToken(config.githubToken),
-    channels: config.githubChannels.length > 0 ? config.githubChannels : ['general'],
-    pollIntervalMs: config.githubPollSeconds * 1000,
-    cursorFile: path.join(dataDir, 'github-cursor.json'),
-  })
+  const protectedTransports = security
+    ? transports.map((transport) => new SecureTransport(transport, security.mode, security.codec))
+    : transports
+  if (protectedTransports.length === 1) return protectedTransports[0]!
+  const primaryRoute = config.transport === 'filesystem' ? 'filesystem' : config.transport
+  return new CompositeTransport(protectedTransports, config.mailboxRoute || primaryRoute)
 }
 
 export function apply(ctx: Context, config: Config): void {
@@ -144,7 +211,19 @@ export function apply(ctx: Context, config: Config): void {
   const dataDir = config.dataDir || path.join(os.homedir(), '.dsh-a2a-messenger')
   const inbox = QuarantineInbox.open(path.join(dataDir, 'inbox.json'))
   const identity = openDirectIdentity(path.join(dataDir, 'direct-identity.json'))
-  const transport = buildTransport(config, dataDir)
+  const contacts = ContactStore.open(path.join(dataDir, 'contacts.json'))
+  contacts.importLegacy(parseTrustedPeers(config.trustedPeers ?? []))
+  const envelopeCodec = new MailboxEnvelopeCodec({
+    selfName: config.agentName,
+    identity,
+    contacts,
+    ttlMs: Math.max(1, config.mailboxTtlHours ?? 168) * 60 * 60 * 1000,
+    replayFile: path.join(dataDir, 'mailbox-replay.json'),
+  })
+  const transport = buildTransport(config, dataDir, {
+    codec: envelopeCodec,
+    mode: config.mailboxEncryption ?? 'readable',
+  })
   const service = new MessengerService({
     transport,
     inbox,
@@ -154,8 +233,20 @@ export function apply(ctx: Context, config: Config): void {
   const direct = new DirectSessionManager({
     selfName: config.agentName,
     identity,
-    trustedPeers: parseTrustedPeers(config.trustedPeers ?? []),
+    trustedPeers: () => contacts.trustedPeers(),
     onMessage: (msg) => service.intake(msg),
+    icePolicy: config.directIcePolicy ?? 'stun',
+    stunServers: config.stunServers,
+    turnServers: config.turnServers,
+    turnUsername: config.turnUsername,
+    turnCredential: config.turnCredential,
+  })
+  const rendezvous = new RendezvousCoordinator(service, direct)
+  service.setProtocolHandler((message) => rendezvous.handle(message))
+  const removeDecisionListener = inbox.onDecision((message) => {
+    if (message.deliveryId && message.channel === 'direct') {
+      direct.acknowledge(message.deliveryId, message.status === 'accepted' ? 'accepted' : 'rejected')
+    }
   })
 
   c.effect(() => {
@@ -163,10 +254,20 @@ export function apply(ctx: Context, config: Config): void {
     return () => {
       void service.stop()
       void direct.close()
+      removeDecisionListener()
     }
   })
 
-  const deps = { service, direct, inbox, selfName: config.agentName }
+  const deps = {
+    service,
+    direct,
+    inbox,
+    contacts,
+    rendezvous,
+    identity,
+    selfName: config.agentName,
+    deviceName: config.deviceName || os.hostname(),
+  }
   for (const def of buildToolDefs(deps)) c.tools.register(defineTool(def as never))
   for (const def of buildCommandDefs(deps)) c.commands.register(def)
 }
@@ -185,6 +286,12 @@ export {
 } from './direct/identity.js'
 export { decodeCode, encodeCode } from './direct/codec.js'
 export { NoneTransport } from './transports/none.js'
+export { CompositeTransport } from './transports/composite.js'
+export { FilesystemTransport } from './transports/filesystem.js'
+export { SecureTransport } from './transports/secure.js'
+export { ContactStore, decodeContactCard, encodeContactCard } from './contacts.js'
+export { MailboxEnvelopeCodec } from './mailbox-envelope.js'
+export { RendezvousCoordinator } from './rendezvous.js'
 export {
   buildCommandDefs,
   buildToolDefs,
@@ -193,3 +300,6 @@ export {
 } from './surface.js'
 export type { Transport, TransportState, TransportSendInput } from './transport.js'
 export type { IncomingMessage, QuarantinedMessage, QuarantineStatus } from './types.js'
+export type { Contact, ContactTrust } from './contacts.js'
+export type { MailboxSecurity } from './transports/secure.js'
+export type { DirectDiagnostics, DirectReceipt, DirectReceiptStatus, IcePolicy } from './direct/session.js'

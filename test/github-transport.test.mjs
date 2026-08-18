@@ -158,3 +158,31 @@ test('collaborators surface as peers', async () => {
     await gh.close()
   }
 })
+
+test('concurrent first start cannot partition peers across duplicate channel issues', async () => {
+  const gh = await startMockGitHub({ tokens: TOKENS, issueListBarrierRounds: 2 })
+  const alice = makeTransport(gh.url, 'tok-alice')
+  const bob = makeTransport(gh.url, 'tok-bob')
+  const aliceGot = []
+  const bobGot = []
+  try {
+    alice.start({ onMessage: (message) => aliceGot.push(message) })
+    bob.start({ onMessage: (message) => bobGot.push(message) })
+    await waitFor(() => alice.state === 'connected' && bob.state === 'connected')
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    assert.equal(gh.state.issues.filter((issue) => issue.title === 'a2a: general').length, 2)
+    assert.equal(gh.state.issues.filter((issue) => issue.title === 'a2a: __mailbox__').length, 2)
+
+    await alice.send({ channel: 'general', content: 'from alice copy' })
+    await bob.send({ channel: 'general', content: 'from bob copy' })
+    await Promise.all([alice.pollOnce(), bob.pollOnce()])
+
+    assert.deepEqual(aliceGot.map((message) => message.content), ['from bob copy'])
+    assert.deepEqual(bobGot.map((message) => message.content), ['from alice copy'])
+  } finally {
+    await alice.stop()
+    await bob.stop()
+    await gh.close()
+  }
+})

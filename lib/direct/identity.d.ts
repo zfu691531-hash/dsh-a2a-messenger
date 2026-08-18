@@ -2,6 +2,9 @@ export interface DirectIdentity {
     publicKey: string;
     privateKey: string;
     fingerprint: string;
+    encryptionPublicKey: string;
+    encryptionPrivateKey: string;
+    deviceId: string;
 }
 export declare function fingerprintPublicKey(publicKey: string): string;
 export declare function createDirectIdentity(): DirectIdentity;

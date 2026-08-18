@@ -1,11 +1,28 @@
 // Minimal in-memory mock of the GitHub REST endpoints used by GitHubTransport.
 import { createServer } from 'node:http'
 
-export function startMockGitHub({ port = 0, tokens = {} } = {}) {
+export function startMockGitHub({ port = 0, tokens = {}, issueListBarrierRounds = 0 } = {}) {
   // tokens: { 'tok-alice': 'alice', ... }
   const issues = [] // { number, title, labels: [], comments: [{id, body, user, created_at}] }
   let nextIssue = 1
   let nextComment = 1
+  let issueListBarrierCalls = 0
+  const issueListWaiters = new Map()
+
+  function waitAtIssueListBarrier() {
+    const call = issueListBarrierCalls++
+    if (call >= issueListBarrierRounds * 2) return Promise.resolve()
+    const round = Math.floor(call / 2)
+    return new Promise((resolve) => {
+      const waiters = issueListWaiters.get(round) ?? []
+      waiters.push(resolve)
+      issueListWaiters.set(round, waiters)
+      if (waiters.length === 2) {
+        issueListWaiters.delete(round)
+        for (const release of waiters) release()
+      }
+    })
+  }
 
   function json(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json' })
@@ -53,10 +70,14 @@ export function startMockGitHub({ port = 0, tokens = {} } = {}) {
       }
 
       if (req.method === 'GET' && rest === '/issues') {
+        // Snapshot before the barrier so two concurrent first starts both see
+        // the same empty list and deterministically exercise duplicate creation.
+        const snapshot = issues.map((i) => ({ number: i.number, title: i.title, labels: i.labels }))
+        await waitAtIssueListBarrier()
         return json(
           res,
           200,
-          issues.map((i) => ({ number: i.number, title: i.title, labels: i.labels })),
+          snapshot,
         )
       }
 

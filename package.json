@@ -1,7 +1,7 @@
 {
   "name": "dsh-a2a-messenger",
-  "version": "0.4.0",
-  "description": "Cross-device agent messaging plugin for DeepSeek Harness (DSH): zero-deployment GitHub mailbox, serverless direct P2P sessions, quarantined inbox, human-approved context injection.",
+  "version": "0.5.0",
+  "description": "Cross-device DSH messaging without a self-hosted backend: sealed mailboxes, authenticated WebRTC sessions, explicit routing, quarantine, and human approval.",
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",
@@ -13,6 +13,7 @@
   },
   "files": [
     "lib",
+    "docs",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

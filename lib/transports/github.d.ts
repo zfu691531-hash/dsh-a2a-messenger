@@ -35,7 +35,7 @@ export declare class GitHubTransport implements Transport {
     private timer;
     private stopped;
     private selfLogin;
-    private readonly issueByChannel;
+    private readonly issuesByChannel;
     private cursor;
     private readonly pollIntervalMs;
     private readonly fetchImpl;
@@ -50,6 +50,7 @@ export declare class GitHubTransport implements Transport {
     }>;
     peers(): Promise<TransportPeer[]>;
     channels(): Promise<string[]>;
+    diagnostics(): Record<string, unknown>;
     private setState;
     private run;
     private init;
@@ -58,6 +59,8 @@ export declare class GitHubTransport implements Transport {
     pollOnce(): Promise<number>;
     private normalizeComment;
     private ensureChannelIssue;
+    /** Concurrent first starts can create duplicate same-title issues; watch every copy. */
+    private refreshChannelIssues;
     private request;
     private loadCursor;
     private saveCursor;

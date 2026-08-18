@@ -1,4 +1,4 @@
-import type { QuarantineInbox } from './inbox.js';
+import type { AddResult, QuarantineInbox } from './inbox.js';
 import type { Transport, TransportSendInput, TransportState } from './transport.js';
 import type { QuarantinedMessage } from './types.js';
 export interface MessengerServiceOptions {
@@ -18,6 +18,7 @@ export interface MessengerServiceOptions {
 export declare class MessengerService {
     private readonly opts;
     private started;
+    private protocolHandler;
     constructor(opts: MessengerServiceOptions);
     get connectionState(): TransportState;
     get transportKind(): string;
@@ -36,8 +37,15 @@ export declare class MessengerService {
     intake(msg: {
         id: string;
         from: string;
+        fromFingerprint?: string;
         channel?: string;
         content: string;
         ts: number;
-    }): void;
+        route?: string;
+        security?: 'readable' | 'sealed' | 'direct';
+        protocol?: 'rendezvous';
+        deliveryId?: string;
+    }): AddResult | 'self';
+    setProtocolHandler(handler: (msg: QuarantinedMessage) => boolean | Promise<boolean>): void;
+    diagnostics(): Record<string, unknown>;
 }

@@ -19,6 +19,7 @@ export declare class QuarantineInbox {
     private readonly maxPending;
     private readonly maxContentBytes;
     private readonly maxDecided;
+    private readonly decisionListeners;
     private constructor();
     static open(filePath: string, options?: QuarantineInboxOptions): QuarantineInbox;
     add(msg: IncomingMessage): AddResult;
@@ -27,9 +28,11 @@ export declare class QuarantineInbox {
     pendingCount(): number;
     accept(id: string): QuarantinedMessage | undefined;
     reject(id: string): QuarantinedMessage | undefined;
+    onDecision(listener: (message: QuarantinedMessage) => void): () => void;
     /** Decide every pending message at once; returns the affected messages. */
     decideAll(status: Exclude<QuarantineStatus, 'pending'>): QuarantinedMessage[];
     private decide;
+    private notifyDecision;
     private persist;
     private pruneDecided;
 }

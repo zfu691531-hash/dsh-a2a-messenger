@@ -7,4 +7,15 @@
         serverUrl: ''
         token: ''
         agentName: ''
+        deviceName: ''
+        transport: 'github'
+        mailboxEncryption: 'readable'
+        mailboxRoute: ''
+        mailboxTtlHours: 168
+        filesystemDir: ''
+        directIcePolicy: 'stun'
+        stunServers:
+          - 'stun:stun.l.google.com:19302'
+          - 'stun:stun1.l.google.com:19302'
+        turnServers: []
         trustedPeers: []

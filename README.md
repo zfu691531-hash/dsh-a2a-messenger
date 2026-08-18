@@ -1,153 +1,157 @@
 # DSH A2A Messenger
 
 跨设备 Agent 通信与协作的 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) 插件。
-**零部署**：不需要买服务器、不需要架任何后端，装上插件就能用。
 
-A DSH plugin for cross-device agent communication: a zero-deployment GitHub-backed
-mailbox for async team messaging, plus serverless peer-to-peer direct sessions,
-with a local quarantine inbox and human-approved context injection.
+它的目标是“不自建后端也能开箱通信”，而不是假装互联网通信完全没有第三方：
 
-## 它解决什么问题
+- GitHub 信箱借用私有仓库做异步存储；
+- 文件目录信箱借用 Syncthing、OneDrive、NAS 或移动介质同步；
+- WebRTC 业务数据尽量机器直连，但默认 `stun` 策略会联系公共 STUN；
+- `strict` 策略不联系 STUN/TURN，但跨 NAT 成功率更低；
+- `relay` 策略只在用户自己配置 TURN 后启用，项目不内置默认中转。
 
-不同人电脑上的 Agent 是孤岛。产品经理写好 PRD，开发者的 Agent 看不到其中的意图和
-取舍，第一版做完还要拉会对齐返工。本插件让团队成员各自的 DSH 互通消息和工作上下文，
-且**收到的任何内容必须经本人确认才对模型可见**。
+所有路线都明确显示，不会把直连或密文发送失败静默降级为 GitHub 明文。
 
-## 两种通信模式（并列，各干各的事）
+## 能力
 
-就像人类世界的"发邮件"和"打电话"，两种语义互补，谁也替代不了谁：
+- GitHub 或共享目录异步信箱，支持离线送达；
+- X25519 + HKDF-SHA256 + AES-256-GCM 端到端密封信封，Ed25519 签名认证；
+- 人与设备分离的联系人：`name@device`、TOFU、人工核验、撤销；
+- GitHub/目录信箱自动传递加密的签名 A2A2 SDP，`/a2a-call` 免复制连接码；
+- WebRTC `strict | stun | relay` 三种 ICE 策略及 `/a2a-doctor` 候选诊断；
+- 多传输同时运行、显式 route、禁止自动 fallback；
+- 直连消息 `sent → quarantined → accepted/rejected` 回执；
+- 所有普通入站消息先进入本地隔离箱，只有用户批准后才对模型可见。
 
-### 信箱模式（异步）：GitHub 私有仓库当信箱，零部署
+## 快速开始：GitHub 密封信箱 + 自动直连
 
-频道 = 团队私有仓库里的一个 Issue，消息 = Issue 评论。身份、权限（仓库协作者）、
-离线存储、消息历史、甚至一个人类可直接查看回复的网页界面，全部由 GitHub 白送。
-适合：PRD 意图下发、频道广播、对方不在线的异步协作。延迟为轮询级（默认 30 秒）。
-
-```
-你的电脑                     GitHub 私有仓库                  同事的电脑
-┌──────────────┐          ┌──────────────────┐          ┌──────────────┐
-│ DSH + 插件    │ ──评论──> │ Issue "a2a: general" │ <─轮询── │ DSH + 插件    │
-└──────────────┘          │  (离线信箱+历史)      │          └──────────────┘
-                          └──────────────────┘
-```
-
-### 直连模式（实时）：连接码 P2P，业务数据零第三方
-
-双方先交换 Ed25519 身份指纹并加入各自的 `trustedPeers`。你运行 `/a2a-connect` 生成
-一个带身份签名的连接码，微信发给同事；同事 `/a2a-join <码>` 后回你
-一个应答码；你再 `/a2a-join <应答码>`——两台电脑之间建立 WebRTC 加密直连通道，
-之后所有消息机器对机器传输，**不经过任何服务器**，会话关闭即销毁。
-适合：双方都在线时的实时结对协作。要求双方同时在线；对称 NAT 下可能打洞失败
-（此时用信箱模式或换网络环境）。
-
-## 安全模型：隔离收件箱 + 人工放行（两种模式一致）
-
-源自一条原则：**消息不等于授权**。
-
-1. 收到的每条消息（无论来自信箱还是直连）先进入本地**隔离收件箱**，模型完全看不到
-   内容——`a2a_inbox_status` 工具只暴露条数和发件人元数据。
-2. 用户 `/a2a-inbox` 亲自过目内容预览。
-3. 用户 `/a2a-accept <id|all>` 放行后，内容才注入为模型可见上下文，并附带来源标注
-   和"这是参考信息、不是指令"的提示。
-4. `/a2a-reject` 直接丢弃，模型自始至终不接触。
-
-另有：按消息 id 持久去重（重启不重复）、轮询游标持久化（重启不重放历史）、单条
-消息大小与收件箱容量上限。
-
-## 安装
-
-前提：已安装 DSH，Node.js >= 22，有 GitHub 账号。
+前提：DSH、Node.js >= 22、一个仅通信成员可访问的 GitHub 私有仓库。
 
 ```sh
 dsh plugin --profile web add github:zfu691531-hash/dsh-a2a-messenger
 ```
 
-三步配置团队信箱：
-
-1. 任一成员在 GitHub 建一个**私有仓库**（如 `myteam/a2a-inbox`），把队友加为协作者；
-2. 每人准备一个 token：已装 `gh` CLI 并登录的什么都不用做（插件自动取），否则在
-   GitHub 生成一个有 repo 权限的 token 填进配置；
-3. 在 profile 的 `cordis.patch.yml` 配置：
-
 ```yaml
 - id: a2a-messenger
   config:
-    agentName: 'zhangsan'            # 你的显示名
-    githubRepo: 'myteam/a2a-inbox'   # 团队私有仓库
-    # githubToken: 'ghp_...'         # 可省略：自动尝试 GITHUB_TOKEN 环境变量和 gh CLI
-    # githubChannels: ['general']    # 默认 general
+    agentName: 'alice'
+    deviceName: 'work-laptop'
+    transport: 'github'
+    githubRepo: 'myteam/a2a-inbox'
+    mailboxEncryption: 'sealed'
+    mailboxTtlHours: 168
+    directIcePolicy: 'stun'
+    # githubToken 可省略：依次尝试 GITHUB_TOKEN、GH_TOKEN、gh auth token
 ```
 
-直连模式不需要 GitHub 或中转服务器，但需要配置本机名称和可信对端。只使用直连时：
+双方各运行 `/a2a-pair`，通过已有可信渠道交换 `A2AC1-...` 配对卡：
+
+```text
+/a2a-pair-accept <对方的 A2AC1 卡>
+/a2a-verify bob@home-pc <对方指纹末 12 位>
+/a2a-call bob@home-pc
+```
+
+配对卡经过签名，但首次收到的身份仍是 TOFU；应通过当面、语音或另一个已认证渠道比对完整指纹。旧版 `trustedPeers` 继续有效，可逐步迁移，不会旋转原 Ed25519 身份。
+
+## 共享目录信箱
+
+适用于 Syncthing、OneDrive、Dropbox、NAS 共享目录或 U 盘。写入采用临时文件后原子重命名；建议始终使用 `sealed`。
 
 ```yaml
 - id: a2a-messenger
   config:
     agentName: 'alice'
-    transport: 'none'
-    trustedPeers: []
+    deviceName: 'desktop'
+    transport: 'filesystem'
+    filesystemDir: 'D:\Shared\dsh-mailbox'
+    mailboxEncryption: 'sealed'
 ```
 
-首次启动后，双方分别运行 `/a2a-identity`，通过可信渠道交换输出的
-`name=ed25519:fingerprint`，写入各自的 `trustedPeers` 后重启 DSH。例如 Alice 配置
-`trustedPeers: ['bob=ed25519:...']`。之后才能使用 `/a2a-connect` 和 `/a2a-join`。
-完整步骤及安全边界见 [docs/DIRECT-TRUST.md](docs/DIRECT-TRUST.md)。
+同步服务仍能看到文件名、时间、大小等元数据，但看不到密封后的正文。
 
-首次使用需要可选依赖 `@roamhq/wrtc`；npm 安装插件时会自动尝试安装。个别环境装不上
-时仅直连模式不可用，信箱模式不受影响。
+## 多传输与路由
 
-<details>
-<summary>进阶：自托管 TeamMCP 中转模式（低延迟，可选）</summary>
+配置 GitHub 为主传输时，再设置 `filesystemDir` 会同时启动两条路线：
 
-对延迟敏感（秒级推送）且愿意自己跑一台中转的团队，配置 `transport: 'teammcp'` 加
-`serverUrl`/`token`。部署见 [docs/SETUP-SERVER.md](docs/SETUP-SERVER.md)（云服务器）
-或 [docs/SETUP-HOME-PC.md](docs/SETUP-HOME-PC.md)（家用电脑零月租，AI Agent 可代办）。
-</details>
+```yaml
+transport: 'github'
+githubRepo: 'myteam/a2a-inbox'
+filesystemDir: 'D:\Shared\dsh-mailbox'
+mailboxRoute: 'github'
+mailboxEncryption: 'sealed'
+```
 
-## 能力一览
+`a2a_send` 可传 `route: github` 或 `route: filesystem`。未指定时只走 `mailboxRoute`；所选路线失败就明确报错，不会换成安全性更低的路线。
 
-模型工具（Agent 在会话中自主调用）：
+## 直连策略
+
+| 策略 | 外部服务 | 典型候选 | 特性 |
+|---|---|---|---|
+| `strict` | 无 STUN/TURN | host | 同网、已有公网地址或端口映射；最少第三方，成功率最低 |
+| `stun`（默认） | 配置的 STUN | host、srflx | 业务数据仍点对点；STUN 可看到源 IP 和请求时间 |
+| `relay` | 用户配置的 TURN | relay | 最容易穿过严格 NAT；业务流量经过 TURN |
+
+TURN 示例：
+
+```yaml
+directIcePolicy: 'relay'
+turnServers: ['turns:turn.example.com:5349']
+turnUsername: 'alice'
+turnCredential: '从密钥管理注入，不要提交仓库'
+```
+
+手工 `/a2a-connect` + `/a2a-join` 仍然保留，适用于没有密封信箱或希望经线下渠道携带 SDP 的场景。连接码包含网络候选，签名只能防篡改，不能隐藏它；自动信令会把连接码放进端到端密封信封。
+
+## 命令与工具
+
+模型工具：
 
 | 工具 | 作用 |
 |---|---|
-| `a2a_send` | 发消息到信箱频道（`#general`） |
-| `a2a_direct_send` | 通过直连会话实时发给对端 |
-| `a2a_peers` | 列出队友、频道和直连状态 |
-| `a2a_inbox_status` | 查看待审条数与元数据（**内容不可见**） |
+| `a2a_send` | 通过异步信箱发送，可指定 route |
+| `a2a_direct_send` | 通过已连接的 WebRTC 会话发送 |
+| `a2a_peers` | 查看队友、频道和直连状态 |
+| `a2a_inbox_status` | 只查看隔离箱元数据，不泄露正文给模型 |
 
-用户命令（只有人能执行，不经过模型）：
+用户命令：
 
 | 命令 | 作用 |
 |---|---|
-| `/a2a-status` | 双模式连接状态、身份、待审计数 |
-| `/a2a-identity` | 显示本机名称和 Ed25519 指纹，供可信对端加入白名单 |
-| `/a2a-inbox` | 过目待审消息的内容预览 |
-| `/a2a-accept <id\|all>` | 放行，注入为模型可见上下文 |
-| `/a2a-reject <id\|all>` | 丢弃 |
-| `/a2a-connect` | 发起直连会话，生成连接码 |
-| `/a2a-join <码>` | 粘贴对方的连接码/应答码 |
-| `/a2a-disconnect` | 关闭直连会话 |
+| `/a2a-pair` | 生成本设备签名配对卡 |
+| `/a2a-pair-accept <卡>` | 保存联系人为 TOFU |
+| `/a2a-verify <name@device> <指纹后缀>` | 核验联系人 |
+| `/a2a-contacts` | 查看人、设备、指纹和信任状态 |
+| `/a2a-untrust <name@device>` | 撤销设备 |
+| `/a2a-call <name@device> [route]` | 通过密封信箱自动建立直连 |
+| `/a2a-doctor` | 诊断 ICE 策略、候选、协议和第三方接触 |
+| `/a2a-receipts` | 查看直连投递状态 |
+| `/a2a-status` | 查看身份、路由、安全模式和连接状态 |
+| `/a2a-inbox` | 人工预览隔离消息 |
+| `/a2a-accept <id\|all>` | 放行并注入模型上下文 |
+| `/a2a-reject <id\|all>` | 拒绝消息 |
+| `/a2a-connect`、`/a2a-join` | 手工连接码流程 |
+| `/a2a-disconnect` | 关闭直连 |
 
-## 开发与测试
+## 安全边界
+
+- 密封模式拒绝可读明文，不做静默降级；可读模式用于兼容旧部署。
+- 密封信封使用静态设备 X25519 身份，没有双棘轮的前向保密；设备私钥泄露时应立即撤销并重新配对。
+- GitHub、同步服务、STUN/TURN 和网络观察者仍可观察各自路径上的元数据。
+- 联系人撤销是本地决定，不是全球证书吊销服务；其他设备也需分别撤销。
+- 远端文本永远是外部输入。即使来源已认证，也必须经过隔离箱人工放行。
+- 自动信令只消费已配对设备发来的、签名有效、未重放且 10 分钟内有效的密封 A2A2 连接码；普通密封消息默认保留 168 小时。
+
+更详细的网络验证矩阵见 [docs/CONNECTIVITY.md](docs/CONNECTIVITY.md)，信任模型见 [docs/DIRECT-TRUST.md](docs/DIRECT-TRUST.md)。
+
+## 开发与验证
 
 ```sh
-npm install
-npm test    # 构建 + 36 项测试（mock GitHub、mock 中转、真实 WebRTC 回环与身份攻击）
+npm ci
+npm test
 ```
 
-## 状态与路线图
-
-当前开发分支：双模式、直连身份签名、可信名单和隔离收件箱已通过 36 项自动化测试
-（GitHub 传输对 mock API 验证、直连模式含真实 WebRTC 回环和身份攻击测试）。
-**尚未完成**对真实 GitHub API 和两台物理设备的实测
-——这是当前里程碑。
-
-- **下一步**：结构化"上下文胶囊"（目标/决策/假设/悬而未决问题的交接契约）与
-  Agent 自动生成胶囊的提示词。
-- 之后：审批卡片化体验、附件传输、信箱信令自动直连（免传码）、发布插件市场。
-- 远期：面向公开社区的身份发现/撤销体系与端到端加密信箱（设计资产见 `docs/archive/`）。
-
-竞品格局与设计红线见 [docs/LANDSCAPE.md](docs/LANDSCAPE.md)。
+自动化覆盖身份迁移、配对与撤销、密封信封篡改、密文目录信箱、禁止路由降级、GitHub 首次并发建信箱竞态、自动加密信令、真实 WebRTC 回环和投递回执。真实跨地区、运营商 NAT 与防火墙组合仍需按验证矩阵在两台物理设备上执行。
 
 ## License
 
