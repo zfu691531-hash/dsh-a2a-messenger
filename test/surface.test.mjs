@@ -40,6 +40,8 @@ function fakeDirect(state = 'idle') {
     sentDirect,
     state,
     peerName: state === 'connected' ? 'alice' : '',
+    peerFingerprint: state === 'connected' ? 'ed25519:peer-fingerprint' : '',
+    localFingerprint: 'ed25519:local-fingerprint',
     send(content) {
       if (state !== 'connected') throw new Error('direct session is not connected')
       sentDirect.push(content)
@@ -47,10 +49,10 @@ function fakeDirect(state = 'idle') {
     },
     async close() {},
     async createOffer() {
-      return 'A2A1-FAKEOFFER'
+      return 'A2A2-FAKEOFFER'
     },
     async accept(code) {
-      if (code.includes('OFFER')) return { answerCode: 'A2A1-FAKEANSWER' }
+      if (code.includes('OFFER')) return { answerCode: 'A2A2-FAKEANSWER' }
       return {}
     },
   }
@@ -168,17 +170,17 @@ test('/a2a-connect, /a2a-join and /a2a-disconnect drive the direct session', asy
 
   const connect = await defs.find((d) => d.name === 'a2a-connect').handler(fakeInvocation('').invocation)
   assert.equal(connect.kind, 'success')
-  assert.match(connect.text, /A2A1-FAKEOFFER/)
+  assert.match(connect.text, /A2A2-FAKEOFFER/)
 
   const joinOffer = await defs
     .find((d) => d.name === 'a2a-join')
-    .handler(fakeInvocation('A2A1-FAKEOFFER').invocation)
+    .handler(fakeInvocation('A2A2-FAKEOFFER').invocation)
   assert.equal(joinOffer.kind, 'success')
-  assert.match(joinOffer.text, /A2A1-FAKEANSWER/)
+  assert.match(joinOffer.text, /A2A2-FAKEANSWER/)
 
   const joinAnswer = await defs
     .find((d) => d.name === 'a2a-join')
-    .handler(fakeInvocation('A2A1-SOMEANSWER').invocation)
+    .handler(fakeInvocation('A2A2-SOMEANSWER').invocation)
   assert.equal(joinAnswer.kind, 'success')
   assert.match(joinAnswer.text, /connecting/)
 
@@ -187,6 +189,15 @@ test('/a2a-connect, /a2a-join and /a2a-disconnect drive the direct session', asy
 
   const bye = await defs.find((d) => d.name === 'a2a-disconnect').handler(fakeInvocation('').invocation)
   assert.equal(bye.kind, 'success')
+})
+
+test('/a2a-identity shows the copyable local trust entry', async () => {
+  const { deps } = makeDeps()
+  const identity = await buildCommandDefs(deps)
+    .find((d) => d.name === 'a2a-identity')
+    .handler(fakeInvocation('').invocation)
+  assert.equal(identity.kind, 'success')
+  assert.match(identity.text, /bob=ed25519:local-fingerprint/)
 })
 
 test('/a2a-status reports both modes and pending count', async () => {

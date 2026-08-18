@@ -1,4 +1,6 @@
 import { deflateRawSync, inflateRawSync } from 'node:zlib'
+import type { DirectIdentity } from './identity.js'
+import { fingerprintPublicKey, signText, verifyText } from './identity.js'
 
 /**
  * Connect-code codec for direct sessions. A code carries one side's WebRTC
@@ -7,32 +9,81 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib'
  */
 
 export interface DirectPayload {
-  v: 1
+  v: 2
   role: 'offer' | 'answer'
   name: string
   sdp: string
+  sessionId: string
+  publicKey: string
+  signature: string
 }
 
-const PREFIX = 'A2A1-'
+export type UnsignedDirectPayload = Omit<DirectPayload, 'signature'>
 
-export function encodeCode(payload: DirectPayload): string {
-  const packed = deflateRawSync(Buffer.from(JSON.stringify(payload), 'utf8'))
+const PREFIX = 'A2A2-'
+const LEGACY_PREFIX = 'A2A1-'
+const MAX_CODE_CHARS = 256_000
+const MAX_UNPACKED_BYTES = 192 * 1024
+const MAX_SDP_BYTES = 128 * 1024
+
+export function encodeCode(payload: UnsignedDirectPayload, identity: DirectIdentity): string {
+  if (payload.publicKey !== identity.publicKey) {
+    throw new Error('signaling public key does not match the local identity')
+  }
+  const signed: DirectPayload = {
+    ...payload,
+    signature: signText(identity, canonicalPayload(payload)),
+  }
+  const packed = deflateRawSync(Buffer.from(JSON.stringify(signed), 'utf8'))
   return PREFIX + packed.toString('base64url')
 }
 
 export function decodeCode(code: string): DirectPayload | undefined {
   const trimmed = code.trim()
-  if (!trimmed.startsWith(PREFIX)) return undefined
+  if (!trimmed.startsWith(PREFIX) || trimmed.length > MAX_CODE_CHARS) return undefined
   try {
     const packed = Buffer.from(trimmed.slice(PREFIX.length), 'base64url')
-    const raw = JSON.parse(inflateRawSync(packed).toString('utf8')) as DirectPayload
-    if (raw.v !== 1) return undefined
+    const unpacked = inflateRawSync(packed, { maxOutputLength: MAX_UNPACKED_BYTES })
+    const raw = JSON.parse(unpacked.toString('utf8')) as DirectPayload
+    if (raw.v !== 2) return undefined
     if (raw.role !== 'offer' && raw.role !== 'answer') return undefined
-    if (typeof raw.name !== 'string' || typeof raw.sdp !== 'string' || raw.sdp.length === 0) {
+    if (
+      typeof raw.name !== 'string' || raw.name.length === 0 || raw.name.length > 128 ||
+      typeof raw.sdp !== 'string' || raw.sdp.length === 0 ||
+      Buffer.byteLength(raw.sdp, 'utf8') > MAX_SDP_BYTES ||
+      typeof raw.sessionId !== 'string' || raw.sessionId.length === 0 || raw.sessionId.length > 128 ||
+      typeof raw.publicKey !== 'string' || raw.publicKey.length === 0 || raw.publicKey.length > 256 ||
+      typeof raw.signature !== 'string' || raw.signature.length === 0 || raw.signature.length > 256
+    ) {
       return undefined
     }
     return raw
   } catch {
     return undefined
   }
+}
+
+export function verifyPayload(payload: DirectPayload): string | undefined {
+  const { signature, ...unsigned } = payload
+  if (!verifyText(payload.publicKey, canonicalPayload(unsigned), signature)) return undefined
+  try {
+    return fingerprintPublicKey(payload.publicKey)
+  } catch {
+    return undefined
+  }
+}
+
+export function isLegacyCode(code: string): boolean {
+  return code.trim().startsWith(LEGACY_PREFIX)
+}
+
+function canonicalPayload(payload: UnsignedDirectPayload): string {
+  return JSON.stringify([
+    payload.v,
+    payload.role,
+    payload.name,
+    payload.sdp,
+    payload.sessionId,
+    payload.publicKey,
+  ])
 }

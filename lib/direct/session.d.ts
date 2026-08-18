@@ -1,4 +1,5 @@
 import type { IncomingMessage } from '../types.js';
+import type { DirectIdentity } from './identity.js';
 /**
  * Direct (peer-to-peer) session over a WebRTC data channel. Signaling is a
  * human-carried connect code: A generates an offer code, B pastes it and
@@ -55,6 +56,9 @@ interface RtcModuleLike {
 }
 export interface DirectSessionOptions {
     selfName: string;
+    identity: DirectIdentity;
+    /** Trusted fingerprint -> expected display name. Empty means deny every peer. */
+    trustedPeers: ReadonlyMap<string, string>;
     onMessage: (msg: IncomingMessage) => void;
     onStateChange?: (state: DirectState) => void;
     /** Injectable WebRTC module (tests); defaults to lazy `@roamhq/wrtc`. */
@@ -69,9 +73,13 @@ export declare class DirectSessionManager {
     private pc;
     private dc;
     private remoteName;
+    private remoteFingerprint;
+    private pendingSessionId;
     constructor(opts: DirectSessionOptions);
     get state(): DirectState;
     get peerName(): string;
+    get peerFingerprint(): string;
+    get localFingerprint(): string;
     /** Start a session: returns the offer connect-code to hand to the peer. */
     createOffer(): Promise<string>;
     /**
@@ -90,6 +98,7 @@ export declare class DirectSessionManager {
     private setState;
     private watchConnection;
     private attachChannel;
+    private verifyPeer;
     private waitIceGathering;
 }
 export {};

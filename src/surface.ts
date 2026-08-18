@@ -223,9 +223,23 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
       kind: 'success',
       text: [
         `identity: ${deps.selfName}`,
+        `direct fingerprint: ${deps.direct.localFingerprint}`,
         `mailbox transport: ${deps.service.transportKind} (${deps.service.connectionState})`,
-        `direct session: ${deps.direct.state}${deps.direct.peerName ? ` with ${deps.direct.peerName}` : ''}`,
+        `direct session: ${deps.direct.state}${deps.direct.peerName ? ` with ${deps.direct.peerName} (${deps.direct.peerFingerprint})` : ''}`,
         `pending messages: ${deps.inbox.pendingCount()}`,
+      ].join('\n'),
+    }),
+  }
+
+  const identity: CommandDefinitionLike = {
+    name: 'a2a-identity',
+    description: 'Show the local direct-session identity entry to exchange with a trusted peer.',
+    handler: () => ({
+      kind: 'success',
+      text: [
+        'Send this entry to the peer over a trusted channel:',
+        `${deps.selfName}=${deps.direct.localFingerprint}`,
+        'They add it to trustedPeers; add their entry to your trustedPeers before connecting.',
       ].join('\n'),
     }),
   }
@@ -314,6 +328,7 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
           kind: 'success',
           text: [
             'Direct session offer created. Send this connect code to your peer (WeChat/any chat):',
+            `Your signed identity: ${deps.selfName} (${deps.direct.localFingerprint})`,
             '',
             code,
             '',
@@ -330,7 +345,7 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
     name: 'a2a-join',
     description:
       'Paste a connect code from your peer: an offer code joins their session (returns an answer code); an answer code completes yours.',
-    input: { hint: 'connect code (A2A1-...)' },
+    input: { hint: 'signed connect code (A2A2-...)' },
     handler: async (invocation) => {
       const code = invocation.rawInput.trim()
       if (code.length === 0) return { kind: 'error', text: 'Usage: /a2a-join <connect code>' }
@@ -367,5 +382,5 @@ export function buildCommandDefs(deps: SurfaceDeps): CommandDefinitionLike[] {
     },
   }
 
-  return [status, listInbox, accept, reject, connect, join, disconnect]
+  return [status, identity, listInbox, accept, reject, connect, join, disconnect]
 }

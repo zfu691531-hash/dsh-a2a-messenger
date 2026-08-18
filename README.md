@@ -33,7 +33,8 @@ with a local quarantine inbox and human-approved context injection.
 
 ### 直连模式（实时）：连接码 P2P，业务数据零第三方
 
-你运行 `/a2a-connect` 生成一个连接码，微信发给同事；同事 `/a2a-join <码>` 后回你
+双方先交换 Ed25519 身份指纹并加入各自的 `trustedPeers`。你运行 `/a2a-connect` 生成
+一个带身份签名的连接码，微信发给同事；同事 `/a2a-join <码>` 后回你
 一个应答码；你再 `/a2a-join <应答码>`——两台电脑之间建立 WebRTC 加密直连通道，
 之后所有消息机器对机器传输，**不经过任何服务器**，会话关闭即销毁。
 适合：双方都在线时的实时结对协作。要求双方同时在线；对称 NAT 下可能打洞失败
@@ -77,8 +78,23 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-a2a-messenger
     # githubChannels: ['general']    # 默认 general
 ```
 
-直连模式无需任何配置，`/a2a-connect` 即用（首次使用需要可选依赖 `@roamhq/wrtc`，
-npm 安装插件时会自动带上；个别环境装不上时仅直连模式不可用，信箱模式不受影响）。
+直连模式不需要 GitHub 或中转服务器，但需要配置本机名称和可信对端。只使用直连时：
+
+```yaml
+- id: a2a-messenger
+  config:
+    agentName: 'alice'
+    transport: 'none'
+    trustedPeers: []
+```
+
+首次启动后，双方分别运行 `/a2a-identity`，通过可信渠道交换输出的
+`name=ed25519:fingerprint`，写入各自的 `trustedPeers` 后重启 DSH。例如 Alice 配置
+`trustedPeers: ['bob=ed25519:...']`。之后才能使用 `/a2a-connect` 和 `/a2a-join`。
+完整步骤及安全边界见 [docs/DIRECT-TRUST.md](docs/DIRECT-TRUST.md)。
+
+首次使用需要可选依赖 `@roamhq/wrtc`；npm 安装插件时会自动尝试安装。个别环境装不上
+时仅直连模式不可用，信箱模式不受影响。
 
 <details>
 <summary>进阶：自托管 TeamMCP 中转模式（低延迟，可选）</summary>
@@ -104,6 +120,7 @@ npm 安装插件时会自动带上；个别环境装不上时仅直连模式不�
 | 命令 | 作用 |
 |---|---|
 | `/a2a-status` | 双模式连接状态、身份、待审计数 |
+| `/a2a-identity` | 显示本机名称和 Ed25519 指纹，供可信对端加入白名单 |
 | `/a2a-inbox` | 过目待审消息的内容预览 |
 | `/a2a-accept <id\|all>` | 放行，注入为模型可见上下文 |
 | `/a2a-reject <id\|all>` | 丢弃 |
@@ -115,19 +132,20 @@ npm 安装插件时会自动带上；个别环境装不上时仅直连模式不�
 
 ```sh
 npm install
-npm test    # 构建 + 29 项测试（mock GitHub、mock 中转、真实 WebRTC 回环）
+npm test    # 构建 + 36 项测试（mock GitHub、mock 中转、真实 WebRTC 回环与身份攻击）
 ```
 
 ## 状态与路线图
 
-当前 `0.4.0`：双模式全部实现并通过自动化测试（GitHub 传输对 mock API 验证、直连
-模式含真实 WebRTC 回环验证）。**尚未完成**对真实 GitHub API 和两台物理设备的实测
+当前开发分支：双模式、直连身份签名、可信名单和隔离收件箱已通过 36 项自动化测试
+（GitHub 传输对 mock API 验证、直连模式含真实 WebRTC 回环和身份攻击测试）。
+**尚未完成**对真实 GitHub API 和两台物理设备的实测
 ——这是当前里程碑。
 
 - **下一步**：结构化"上下文胶囊"（目标/决策/假设/悬而未决问题的交接契约）与
   Agent 自动生成胶囊的提示词。
 - 之后：审批卡片化体验、附件传输、信箱信令自动直连（免传码）、发布插件市场。
-- 远期：面向公开社区的身份体系与端到端加密（设计资产见 `docs/archive/`）。
+- 远期：面向公开社区的身份发现/撤销体系与端到端加密信箱（设计资产见 `docs/archive/`）。
 
 竞品格局与设计红线见 [docs/LANDSCAPE.md](docs/LANDSCAPE.md)。
 

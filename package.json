@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test \"test/*.test.mjs\"",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "mock-server": "node test/mock-teammcp-server.mjs --standalone"
   },
   "dsh": {

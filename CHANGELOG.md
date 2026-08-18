@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Direct-only `transport: 'none'` mode that does not require GitHub or TeamMCP.
+- Persistent Ed25519 device identities, signed `A2A2` signaling codes, session-id
+  binding, and strict `name=fingerprint` trusted-peer configuration.
+- `/a2a-identity` command for out-of-band fingerprint exchange.
+- Security tests covering tampered codes, unknown peers, renamed identities,
+  replayed answers, corrupt identity files, and message provenance spoofing.
+
+### Changed
+
+- Direct message provenance is bound to the verified session identity; message
+  payloads cannot choose their own sender name or collide with other transports.
+- Direct signaling and message sizes are bounded.
+- `npm test` discovers test files through a cross-platform Node runner.
+
+### Security
+
+- Legacy unsigned `A2A1` connection codes now fail closed with an upgrade message.
+
 ## 0.4.0 — 2026-08-18
 
 Zero-deployment pivot: no server required. Two peer transport modes, both

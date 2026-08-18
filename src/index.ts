@@ -5,12 +5,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { DirectSessionManager } from './direct/session.js'
+import { openDirectIdentity } from './direct/identity.js'
 import { QuarantineInbox } from './inbox.js'
 import { MessengerService } from './service.js'
 import { buildCommandDefs, buildToolDefs, PLUGIN_NAME } from './surface.js'
 import { TeamMcpClient } from './teammcp-client.js'
 import type { Transport } from './transport.js'
 import { GitHubTransport } from './transports/github.js'
+import { NoneTransport } from './transports/none.js'
 import { TeamMcpTransport } from './transports/teammcp.js'
 
 export const name = PLUGIN_NAME
@@ -18,8 +20,9 @@ export const inject = ['tools', 'commands']
 
 export interface Config {
   agentName: string
-  transport: 'github' | 'teammcp'
+  transport: 'none' | 'github' | 'teammcp'
   dataDir: string
+  trustedPeers: string[]
   githubRepo: string
   githubToken: string
   githubChannels: string[]
@@ -32,12 +35,15 @@ export const Config: Schema<Config> = Schema.object({
   agentName: Schema.string()
     .required()
     .description('Your display name shown to teammates'),
-  transport: Schema.union(['github', 'teammcp'] as const)
+  transport: Schema.union(['none', 'github', 'teammcp'] as const)
     .default('github')
-    .description('Async mailbox transport: "github" (zero deployment) or "teammcp" (self-hosted relay)'),
+    .description('Async mailbox transport: "none" (direct-only), "github", or "teammcp"'),
   dataDir: Schema.string()
     .default('')
     .description('Local state directory; empty means ~/.dsh-a2a-messenger'),
+  trustedPeers: Schema.array(Schema.string())
+    .default([])
+    .description('Direct peers allowed to connect, each as "expected-name=ed25519:fingerprint"'),
   githubRepo: Schema.string()
     .default('')
     .description('github transport: private team repository, e.g. "myteam/a2a-inbox"'),
@@ -83,7 +89,34 @@ function resolveGitHubToken(configured: string): string {
   )
 }
 
-function buildTransport(config: Config, dataDir: string): Transport {
+export function parseTrustedPeers(entries: readonly string[]): ReadonlyMap<string, string> {
+  const peers = new Map<string, string>()
+  const fingerprintsByName = new Map<string, string>()
+  for (const entry of entries) {
+    const separator = entry.indexOf('=')
+    const name = separator > 0 ? entry.slice(0, separator).trim() : ''
+    const fingerprint = separator > 0 ? entry.slice(separator + 1).trim() : ''
+    if (!name || !/^ed25519:[A-Za-z0-9_-]{43}$/.test(fingerprint)) {
+      throw new Error(
+        `[${PLUGIN_NAME}] invalid trustedPeers entry "${entry}"; expected "name=ed25519:fingerprint"`,
+      )
+    }
+    const existingName = peers.get(fingerprint)
+    if (existingName && existingName !== name) {
+      throw new Error(`[${PLUGIN_NAME}] fingerprint ${fingerprint} is assigned to multiple names`)
+    }
+    const existingFingerprint = fingerprintsByName.get(name)
+    if (existingFingerprint && existingFingerprint !== fingerprint) {
+      throw new Error(`[${PLUGIN_NAME}] peer name "${name}" is assigned to multiple fingerprints`)
+    }
+    peers.set(fingerprint, name)
+    fingerprintsByName.set(name, fingerprint)
+  }
+  return peers
+}
+
+export function buildTransport(config: Config, dataDir: string): Transport {
+  if (config.transport === 'none') return new NoneTransport()
   if (config.transport === 'teammcp') {
     if (!config.serverUrl || !config.token) {
       throw new Error(`[${PLUGIN_NAME}] teammcp transport needs serverUrl and token in the plugin config`)
@@ -110,6 +143,7 @@ export function apply(ctx: Context, config: Config): void {
 
   const dataDir = config.dataDir || path.join(os.homedir(), '.dsh-a2a-messenger')
   const inbox = QuarantineInbox.open(path.join(dataDir, 'inbox.json'))
+  const identity = openDirectIdentity(path.join(dataDir, 'direct-identity.json'))
   const transport = buildTransport(config, dataDir)
   const service = new MessengerService({
     transport,
@@ -119,6 +153,8 @@ export function apply(ctx: Context, config: Config): void {
   })
   const direct = new DirectSessionManager({
     selfName: config.agentName,
+    identity,
+    trustedPeers: parseTrustedPeers(config.trustedPeers ?? []),
     onMessage: (msg) => service.intake(msg),
   })
 
@@ -142,7 +178,13 @@ export { TeamMcpClient, TeamMcpError, normalizeIncoming } from './teammcp-client
 export { GitHubTransport, GitHubTransportError } from './transports/github.js'
 export { TeamMcpTransport } from './transports/teammcp.js'
 export { DirectSessionManager } from './direct/session.js'
+export {
+  createDirectIdentity,
+  fingerprintPublicKey,
+  openDirectIdentity,
+} from './direct/identity.js'
 export { decodeCode, encodeCode } from './direct/codec.js'
+export { NoneTransport } from './transports/none.js'
 export {
   buildCommandDefs,
   buildToolDefs,

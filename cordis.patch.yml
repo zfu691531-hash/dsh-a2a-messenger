@@ -7,3 +7,4 @@
         serverUrl: ''
         token: ''
         agentName: ''
+        trustedPeers: []
